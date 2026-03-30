@@ -25,7 +25,7 @@ jobs:
 
       - name: Install Claude CLI
         run: |
-          curl -fsSL https://claude.ai/install.sh | sh
+          curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.claude/bin" >> "$GITHUB_PATH"
 
       - name: Setup agent definitions
