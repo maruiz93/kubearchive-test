@@ -28,7 +28,7 @@ jobs:
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.claude/bin" >> "$GITHUB_PATH"
 
-      - name: Setup agent definitions
+      - name: Setup agent definitions and hooks
         run: |
           mkdir -p .claude/agents .claude/skills
           cp .triage/agents/*.md .claude/agents/
@@ -36,6 +36,7 @@ jobs:
             skill_name=$(basename "$skill_dir")
             cp -r "$skill_dir" ".claude/skills/$skill_name"
           done
+          cp .triage/hooks.json .claude/settings.json
 
       - name: Run triage agent
         env:

@@ -1,10 +1,8 @@
 #!/bin/bash
-# Wraps a subagent process in an OpenShell sandbox.
+# SubagentStart hook: wraps a subagent in an OpenShell sandbox.
 #
-# Usage: apply-sandbox.sh <agent-name> [-- <command...>]
-#
-# Reads the agent's sandbox policy from its definition file and
-# launches the process inside OpenShell with that policy.
+# Called by Claude Code as a hook. Receives JSON on stdin with agent_type.
+# Reads the agent's sandbox policy from its definition file.
 #
 # Required env vars (set by launcher.py):
 #   REPO           - org/repo (e.g. "myorg/myrepo")
@@ -13,39 +11,45 @@
 
 set -euo pipefail
 
+# Read hook input from stdin
+INPUT=$(cat)
+AGENT_NAME=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('agent_type',''))" 2>/dev/null || echo "")
+
+if [[ -z "$AGENT_NAME" ]]; then
+    echo "Hook: could not read agent_type from input" >&2
+    exit 0
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_DIR="$(dirname "$SCRIPT_DIR")"
-AGENT_NAME="$1"
-shift
-
 AGENT_FILE="${BASE_DIR}/agents/${AGENT_NAME}.md"
 
 if [[ ! -f "$AGENT_FILE" ]]; then
-    echo "Error: agent definition not found: $AGENT_FILE" >&2
-    exit 1
+    echo "Hook: no agent definition for '${AGENT_NAME}', skipping sandbox" >&2
+    exit 0
 fi
 
 # Read the sandbox field from agent frontmatter
 POLICY=$(sed -n '/^---$/,/^---$/{ /^sandbox:/{ s/^sandbox: *//; p; q; } }' "$AGENT_FILE")
 
 if [[ -z "$POLICY" ]]; then
-    echo "Warning: no sandbox policy for agent '${AGENT_NAME}', running unsandboxed" >&2
-    exec "$@"
+    echo "Hook: no sandbox policy for '${AGENT_NAME}'" >&2
+    exit 0
 fi
 
 POLICY_PATH="${BASE_DIR}/${POLICY}"
 
 if [[ ! -f "$POLICY_PATH" ]]; then
-    echo "Error: sandbox policy not found: $POLICY_PATH" >&2
-    exit 1
+    echo "Hook: sandbox policy not found: ${POLICY_PATH}" >&2
+    exit 0
 fi
 
 if ! command -v openshell &> /dev/null; then
-    echo "Warning: openshell not found, running agent '${AGENT_NAME}' unsandboxed (policy: ${POLICY})" >&2
-    exec "$@"
+    echo "Hook: openshell not found, agent '${AGENT_NAME}' running unsandboxed (would use: ${POLICY})" >&2
+    exit 0
 fi
 
-echo "Sandboxing agent '${AGENT_NAME}' with policy: ${POLICY}" >&2
+echo "Hook: sandboxing '${AGENT_NAME}' with ${POLICY}" >&2
 exec openshell run \
     --policy "$POLICY_PATH" \
     --env "REPO=${REPO}" \
