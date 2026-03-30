@@ -36,7 +36,7 @@ jobs:
           tar -xzf /tmp/openshell.tar.gz -C /usr/local/bin/
           openshell --version
 
-      - name: Setup agent definitions and hooks
+      - name: Setup agent definitions
         run: |
           mkdir -p .claude/agents .claude/skills
           cp .triage/agents/*.md .claude/agents/
@@ -44,32 +44,17 @@ jobs:
             skill_name=$(basename "$skill_dir")
             cp -r "$skill_dir" ".claude/skills/$skill_name"
           done
-          # Write hooks config with absolute path to the sandbox script
-          sed "s|.triage/scripts/apply-sandbox.sh|$(pwd)/.triage/scripts/apply-sandbox.sh|" \
-            .triage/hooks.json > .claude/settings.json
-          cat .claude/settings.json
 
       - name: Run triage agent
         env:
           CLAUDE_CODE_USE_VERTEX: "1"
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
           CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
-          SANDBOX_LOG: /tmp/sandbox.log
         run: |
           python3 .triage/launcher.py \
             --token "${{ secrets.GITHUB_TOKEN }}" \
             --repo "${{ github.repository }}" \
             --issue "${{ github.event.issue.number }}"
-
-      - name: Sandbox log
-        if: always()
-        run: |
-          if [[ -f /tmp/sandbox.log ]]; then
-            echo "--- Sandbox hook activity ---"
-            cat /tmp/sandbox.log
-          else
-            echo "No sandbox hook activity recorded"
-          fi
 
       - name: Convert transcripts to plain text
         if: always()

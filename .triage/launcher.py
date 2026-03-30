@@ -113,6 +113,7 @@ def launch_agent(
     agent_env["REPO"] = repo
     agent_env["ISSUE_NUMBER"] = str(issue_number)
     agent_env["REPO_PATH"] = str(working_dir)
+    agent_env["MCP_CONFIG_PATH"] = mcp_config_file.name
 
     agent_command = [
         "claude",
