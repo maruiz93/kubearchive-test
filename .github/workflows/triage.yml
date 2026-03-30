@@ -36,6 +36,11 @@ jobs:
           tar -xzf /tmp/openshell.tar.gz -C /usr/local/bin/
           openshell --version
 
+      - name: Start OpenShell gateway
+        run: |
+          openshell gateway start
+          openshell status
+
       - name: Setup agent definitions
         run: |
           mkdir -p .claude/agents .claude/skills
