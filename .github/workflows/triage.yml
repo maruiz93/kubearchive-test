@@ -29,6 +29,13 @@ jobs:
           curl -fsSL https://claude.ai/install.sh | bash
           echo "$HOME/.claude/bin" >> "$GITHUB_PATH"
 
+      - name: Install OpenShell
+        run: |
+          curl -fsSL -o /tmp/openshell.tar.gz \
+            https://github.com/NVIDIA/OpenShell/releases/latest/download/openshell-x86_64-unknown-linux-musl.tar.gz
+          tar -xzf /tmp/openshell.tar.gz -C /usr/local/bin/
+          openshell --version
+
       - name: Setup agent definitions and hooks
         run: |
           mkdir -p .claude/agents .claude/skills
