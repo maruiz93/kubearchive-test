@@ -22,6 +22,9 @@ def convert_transcript(jsonl_path: str) -> str:
             continue
 
         for block in content:
+            if isinstance(block, str):
+                lines.append(f"[{role.upper()}] {block}")
+                continue
             if block.get("type") == "text":
                 prefix = "ASSISTANT" if role == "assistant" else role.upper()
                 lines.append(f"[{prefix}] {block['text']}")

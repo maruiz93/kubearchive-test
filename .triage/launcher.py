@@ -118,6 +118,7 @@ def launch_agent(
     agent_command = [
         "claude",
         "--print",
+        "--verbose",
         "--agent", "triage",
         "--mcp-config", mcp_config_file.name,
         "--strict-mcp-config",
