@@ -1,0 +1,37 @@
+version: 1
+
+# Policy for the duplicate-detector.
+# Can read ANY issue in the repo (needs to search for duplicates).
+# No write access, no external web, no local filesystem.
+
+filesystem_policy:
+  read_only: [/usr, /lib, /etc, /sandbox]
+  read_write: [/tmp]
+
+process:
+  run_as_user: sandbox
+
+network_policies:
+  github_read:
+    endpoints:
+      - host: api.github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: GET
+              path: "/repos/${REPO}/issues"
+          - allow:
+              method: GET
+              path: "/repos/${REPO}/issues/*"
+          - allow:
+              method: GET
+              path: "/repos/${REPO}/issues/*/comments"
+    binaries:
+      - { path: "**" }
+  deny_all:
+    endpoints:
+      - host: "**"
+        enforcement: enforce
+        access: deny

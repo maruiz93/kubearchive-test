@@ -1,0 +1,37 @@
+version: 1
+
+# Policy for the top-level triage agent.
+# Write-only: can comment and label the original issue.
+# Cannot read issues — subagents do all reading.
+
+filesystem_policy:
+  read_only: [/usr, /lib, /etc, /sandbox]
+  read_write: [/tmp]
+
+process:
+  run_as_user: sandbox
+
+network_policies:
+  github_write:
+    endpoints:
+      - host: api.github.com
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        rules:
+          - allow:
+              method: POST
+              path: "/repos/${REPO}/issues/${ISSUE_NUMBER}/comments"
+          - allow:
+              method: POST
+              path: "/repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
+          - allow:
+              method: PATCH
+              path: "/repos/${REPO}/issues/${ISSUE_NUMBER}"
+    binaries:
+      - { path: "**" }
+  deny_all:
+    endpoints:
+      - host: "**"
+        enforcement: enforce
+        access: deny

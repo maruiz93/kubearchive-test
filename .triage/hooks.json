@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [{
+          "type": "command",
+          "command": "./scripts/apply-sandbox.sh ${AGENT_NAME}"
+        }]
+      }
+    ]
+  }
+}
