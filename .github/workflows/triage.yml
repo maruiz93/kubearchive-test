@@ -44,7 +44,23 @@ jobs:
             skill_name=$(basename "$skill_dir")
             cp -r "$skill_dir" ".claude/skills/$skill_name"
           done
-          cp .triage/hooks.json .claude/settings.json
+          # Write hooks config with absolute path to the sandbox script
+          cat > .claude/settings.json << EOF
+          {
+            "hooks": {
+              "SubagentStart": [
+                {
+                  "matcher": "",
+                  "hooks": [{
+                    "type": "command",
+                    "command": "$(pwd)/.triage/scripts/apply-sandbox.sh"
+                  }]
+                }
+              ]
+            }
+          }
+          EOF
+          cat .claude/settings.json
 
       - name: Run triage agent
         env:
