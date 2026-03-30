@@ -14,6 +14,7 @@ Subagents only have read tools. The top-level agent handles all writes.
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -124,30 +125,57 @@ def launch_agent(
 
     prompt = f"Triage issue #{issue_number} in {repo}."
 
-    print(f"Launching triage agent for {repo}#{issue_number}...")
-    print(f"MCP server: {mcp_server_path}")
-    print(f"MCP config: {mcp_config_file.name}")
-    print(f"Agent has NO direct GitHub token")
+    # --- Log setup ---
+    print(f"Triage: {repo}#{issue_number}")
+    print(f"  MCP server:  {mcp_server_path}")
+    print(f"  Agent token:  stripped from environment")
+
+    # Log agent tools
+    agents_dir = working_dir / "agents"
+    for agent_file in sorted(agents_dir.glob("*.md")):
+        name = agent_file.stem
+        tools_line = ""
+        sandbox_line = ""
+        in_fm = False
+        with open(agent_file) as f:
+            for line in f:
+                if line.strip() == "---":
+                    if in_fm:
+                        break
+                    in_fm = True
+                    continue
+                if in_fm and line.startswith("tools:"):
+                    tools_line = line.split(":", 1)[1].strip()
+                if in_fm and line.startswith("sandbox:"):
+                    sandbox_line = line.split(":", 1)[1].strip()
+        print(f"  [{name}] tools: {tools_line or 'none'}")
+        if sandbox_line:
+            print(f"  [{name}] sandbox: {sandbox_line}")
+
+    # Log sandbox status
+    has_openshell = shutil.which("openshell") is not None
+    if has_openshell:
+        print("  Sandbox: OpenShell available, policies will be enforced")
+    else:
+        print("  Sandbox: OpenShell NOT found, policies defined but NOT enforced")
+
     print("---")
+    print(f"Running: {prompt}")
+    sys.stdout.flush()
 
     try:
-        result = subprocess.run(
+        process = subprocess.Popen(
             [*agent_command, prompt],
             env=agent_env,
-            capture_output=True,
-            text=True,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
             cwd=working_dir,
-            timeout=600,
         )
+        process.wait(timeout=600)
 
-        print("Agent output:")
-        for line in result.stdout.strip().splitlines():
-            print(f"  {line}")
-
-        if result.returncode != 0 and result.stderr:
-            print("Agent stderr:")
-            for line in result.stderr.strip().splitlines():
-                print(f"  {line}")
+        if process.returncode != 0:
+            print(f"\nAgent exited with code {process.returncode}", file=sys.stderr)
+            sys.exit(process.returncode)
     finally:
         os.unlink(mcp_config_file.name)
 
