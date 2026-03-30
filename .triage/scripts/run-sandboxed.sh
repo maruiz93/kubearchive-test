@@ -59,6 +59,8 @@ fi
 # doesn't support the flags we need (OpenShell is still alpha).
 echo "[run-sandboxed] Running '${AGENT_NAME}' in sandbox: ${POLICY}" >&2
 openshell sandbox create \
+    --no-keep \
+    --no-auto-providers \
     --policy "$POLICY_PATH" \
     -- "${CLAUDE_CMD[@]}" 2>/tmp/openshell-err-$$.log \
 && exit 0
