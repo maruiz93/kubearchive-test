@@ -8,7 +8,8 @@ jobs:
   triage:
     if: >
       github.event.issue.pull_request == null &&
-      contains(github.event.comment.body, '/triage')
+      contains(github.event.comment.body, '/triage') &&
+      github.event.comment.user.login == 'maruiz93'
     runs-on: ubuntu-latest
     permissions:
       issues: write
