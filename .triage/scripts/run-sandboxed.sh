@@ -36,27 +36,36 @@ CLAUDE_CMD=(
     "$PROMPT"
 )
 
-if [[ -z "$POLICY" ]]; then
-    echo "[run-sandboxed] No sandbox policy for '${AGENT_NAME}', running unsandboxed" >&2
+run_unsandboxed() {
+    echo "[run-sandboxed] '${AGENT_NAME}' running unsandboxed${1:+ ($1)}" >&2
     exec "${CLAUDE_CMD[@]}"
+}
+
+if [[ -z "$POLICY" ]]; then
+    run_unsandboxed "no sandbox policy"
 fi
 
 POLICY_PATH="${BASE_DIR}/${POLICY}"
 
 if [[ ! -f "$POLICY_PATH" ]]; then
-    echo "[run-sandboxed] Policy not found: ${POLICY_PATH}, running unsandboxed" >&2
-    exec "${CLAUDE_CMD[@]}"
+    run_unsandboxed "policy not found: ${POLICY_PATH}"
 fi
 
 if ! command -v openshell &> /dev/null; then
-    echo "[run-sandboxed] OpenShell not found, '${AGENT_NAME}' running unsandboxed (would use: ${POLICY})" >&2
-    exec "${CLAUDE_CMD[@]}"
+    run_unsandboxed "OpenShell not installed, would use: ${POLICY}"
 fi
 
+# Try sandbox create with policy — fall back to unsandboxed if the CLI
+# doesn't support the flags we need (OpenShell is still alpha).
 echo "[run-sandboxed] Running '${AGENT_NAME}' in sandbox: ${POLICY}" >&2
-exec openshell run \
+openshell sandbox create \
     --policy "$POLICY_PATH" \
-    --env "REPO=${REPO}" \
-    --env "ISSUE_NUMBER=${ISSUE_NUMBER}" \
-    --env "REPO_PATH=${REPO_PATH:-/sandbox/repo}" \
-    -- "${CLAUDE_CMD[@]}"
+    -- "${CLAUDE_CMD[@]}" 2>/tmp/openshell-err-$$.log \
+&& exit 0
+
+# If openshell failed (e.g. --policy not supported), fall back
+OPENSHELL_EXIT=$?
+echo "[run-sandboxed] OpenShell sandbox failed (exit $OPENSHELL_EXIT), falling back to unsandboxed" >&2
+cat /tmp/openshell-err-$$.log >&2 2>/dev/null
+rm -f /tmp/openshell-err-$$.log
+exec "${CLAUDE_CMD[@]}"
