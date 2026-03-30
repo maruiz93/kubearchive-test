@@ -11,12 +11,19 @@
 
 set -euo pipefail
 
+SANDBOX_LOG="${SANDBOX_LOG:-/tmp/sandbox.log}"
+
+log() {
+    echo "[$(date -u '+%H:%M:%S')] $1" >> "$SANDBOX_LOG"
+    echo "$1" >&2
+}
+
 # Read hook input from stdin
 INPUT=$(cat)
 AGENT_NAME=$(echo "$INPUT" | python3 -c "import sys,json; print(json.load(sys.stdin).get('agent_type',''))" 2>/dev/null || echo "")
 
 if [[ -z "$AGENT_NAME" ]]; then
-    echo "Hook: could not read agent_type from input" >&2
+    log "Hook: could not read agent_type from input"
     exit 0
 fi
 
@@ -25,7 +32,7 @@ BASE_DIR="$(dirname "$SCRIPT_DIR")"
 AGENT_FILE="${BASE_DIR}/agents/${AGENT_NAME}.md"
 
 if [[ ! -f "$AGENT_FILE" ]]; then
-    echo "Hook: no agent definition for '${AGENT_NAME}', skipping sandbox" >&2
+    log "Hook: no agent definition for '${AGENT_NAME}', skipping sandbox"
     exit 0
 fi
 
@@ -33,23 +40,23 @@ fi
 POLICY=$(sed -n '/^---$/,/^---$/{ /^sandbox:/{ s/^sandbox: *//; p; q; } }' "$AGENT_FILE")
 
 if [[ -z "$POLICY" ]]; then
-    echo "Hook: no sandbox policy for '${AGENT_NAME}'" >&2
+    log "Hook: no sandbox policy for '${AGENT_NAME}'"
     exit 0
 fi
 
 POLICY_PATH="${BASE_DIR}/${POLICY}"
 
 if [[ ! -f "$POLICY_PATH" ]]; then
-    echo "Hook: sandbox policy not found: ${POLICY_PATH}" >&2
+    log "Hook: sandbox policy not found: ${POLICY_PATH}"
     exit 0
 fi
 
 if ! command -v openshell &> /dev/null; then
-    echo "Hook: openshell not found, agent '${AGENT_NAME}' running unsandboxed (would use: ${POLICY})" >&2
+    log "Hook: openshell not found, agent '${AGENT_NAME}' running unsandboxed (would use: ${POLICY})"
     exit 0
 fi
 
-echo "Hook: sandboxing '${AGENT_NAME}' with ${POLICY}" >&2
+log "Hook: sandboxing '${AGENT_NAME}' with ${POLICY}"
 exec openshell run \
     --policy "$POLICY_PATH" \
     --env "REPO=${REPO}" \

@@ -51,8 +51,19 @@ jobs:
           CLAUDE_CODE_USE_VERTEX: "1"
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
           CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
+          SANDBOX_LOG: /tmp/sandbox.log
         run: |
           python3 .triage/launcher.py \
             --token "${{ secrets.GITHUB_TOKEN }}" \
             --repo "${{ github.repository }}" \
             --issue "${{ github.event.issue.number }}"
+
+      - name: Sandbox log
+        if: always()
+        run: |
+          if [[ -f /tmp/sandbox.log ]]; then
+            echo "--- Sandbox hook activity ---"
+            cat /tmp/sandbox.log
+          else
+            echo "No sandbox hook activity recorded"
+          fi
