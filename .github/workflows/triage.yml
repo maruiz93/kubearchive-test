@@ -67,3 +67,12 @@ jobs:
           else
             echo "No sandbox hook activity recorded"
           fi
+
+      - name: Upload session transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: triage-session
+          path: ~/.claude/projects/
+          retention-days: 7
+          if-no-files-found: ignore
