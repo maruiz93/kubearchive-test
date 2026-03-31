@@ -198,10 +198,11 @@ def extract_transcripts(
     os.makedirs(LOG_DIR, exist_ok=True)
 
     # Find transcript files (Claude stores them in ~/.claude/projects/)
+    # Search broadly — sandbox user home varies
     result = sandbox_ssh(
         ssh_config_path, sandbox_name,
-        "find /home -name '*.jsonl' -path '*/.claude/*' 2>/dev/null || true",
-        timeout=10,
+        "find / -name '*.jsonl' -path '*/.claude/*' -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null || true",
+        timeout=15,
     )
     files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
     if not files:
