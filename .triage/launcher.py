@@ -15,11 +15,15 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from pathlib import Path
+
+MCP_PORT = 8081
 
 
 def get_token_from_gh_cli() -> str:
@@ -81,18 +85,47 @@ def launch_agent(
 
     mcp_server_path = working_dir / "tools" / "mcp" / "mcp_server.py"
 
-    # Build MCP config JSON for the GitHub triage tools server.
-    # The token is passed via env to the MCP server process, not to the agent.
+    # Start MCP server as a background HTTP process on the host.
+    # The token lives only in this process — agents connect over HTTP.
+    mcp_env = {**os.environ, "MCP_GH_TOKEN": token, "MCP_ALLOWED_REPO": repo}
+    mcp_process = subprocess.Popen(
+        ["python3", str(mcp_server_path), "--http", "--port", str(MCP_PORT)],
+        env=mcp_env,
+        stdout=subprocess.DEVNULL,
+        stderr=sys.stderr,
+    )
+
+    # Wait for MCP server to be ready
+    mcp_ready = False
+    for _ in range(20):
+        try:
+            req = urllib.request.Request(
+                f"http://localhost:{MCP_PORT}/",
+                data=json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize"}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=1)
+            mcp_ready = True
+            break
+        except Exception:
+            time.sleep(0.5)
+
+    if not mcp_ready:
+        print("Error: MCP server failed to start", file=sys.stderr)
+        mcp_process.kill()
+        sys.exit(1)
+
+    # Build MCP config pointing to the HTTP server.
+    # Agents inside OpenShell sandboxes reach the host via host.docker.internal.
+    # Agents running unsandboxed use localhost.
+    has_openshell = shutil.which("openshell") is not None
+    mcp_host = "host.docker.internal" if has_openshell else "localhost"
     mcp_config = {
         "mcpServers": {
             "github-triage": {
-                "type": "stdio",
-                "command": "python3",
-                "args": [str(mcp_server_path)],
-                "env": {
-                    "MCP_GH_TOKEN": token,
-                    "MCP_ALLOWED_REPO": repo,
-                },
+                "type": "http",
+                "url": f"http://{mcp_host}:{MCP_PORT}/",
             }
         }
     }
@@ -120,11 +153,10 @@ def launch_agent(
 
     # --- Log setup ---
     print(f"Triage: {repo}#{issue_number}")
-    print(f"  MCP server:  {mcp_server_path}")
-    print(f"  Agent token:  stripped from environment")
+    print(f"  MCP server:  http://{mcp_host}:{MCP_PORT}/ (pid {mcp_process.pid})")
+    print(f"  Agent token:  in MCP server only")
     print(f"  Sandbox tool: {sandbox_script}")
 
-    has_openshell = shutil.which("openshell") is not None
     if has_openshell:
         print("  Sandbox: OpenShell available, policies will be enforced")
     else:
@@ -152,6 +184,8 @@ def launch_agent(
             sys.exit(process.returncode)
     finally:
         os.unlink(mcp_config_file.name)
+        mcp_process.terminate()
+        mcp_process.wait(timeout=5)
 
 
 def main() -> None:

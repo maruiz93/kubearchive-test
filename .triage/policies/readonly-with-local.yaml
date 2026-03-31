@@ -32,3 +32,13 @@ network_policies:
               path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}
     binaries:
       - path: "**"
+  mcp_server:
+    name: mcp-server
+    endpoints:
+      - host: host.docker.internal
+        port: 8081
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**"

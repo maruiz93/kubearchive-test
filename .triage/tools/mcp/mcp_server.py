@@ -6,14 +6,22 @@ The server holds the GitHub token internally — the agent never sees it.
 Each tool enforces its own constraints (input validation, credential
 scanning, output sanitization) before making any API call.
 
-Runs over stdio, as expected by MCP clients.
+Supports two transport modes:
+- stdio (default): reads JSON-RPC from stdin, writes to stdout
+- http: runs an HTTP server for streamable-http MCP transport
+
+Usage:
+  python3 mcp_server.py                    # stdio mode
+  python3 mcp_server.py --http --port 8080 # HTTP mode
 """
 
+import argparse
 import json
 import os
 import re
 import subprocess
 import sys
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
 
@@ -144,7 +152,7 @@ def add_label(params: dict, token: str, allowed_repo: str) -> dict:
     return json.loads(view_result.stdout)
 
 
-# --- MCP protocol over stdio ---
+# --- MCP protocol ---
 
 TOOLS = {
     "read_issue": {
@@ -300,17 +308,42 @@ def handle_request(request: dict, token: str, allowed_repo: str) -> dict:
     }
 
 
-def main() -> None:
-    token = os.environ.get("MCP_GH_TOKEN")
-    allowed_repo = os.environ.get("MCP_ALLOWED_REPO")
+def make_http_handler(token: str, allowed_repo: str) -> type:
+    """Create an HTTP request handler class with the token and repo bound."""
 
-    if not token:
-        print("Error: MCP_GH_TOKEN not set", file=sys.stderr)
-        sys.exit(1)
-    if not allowed_repo:
-        print("Error: MCP_ALLOWED_REPO not set", file=sys.stderr)
-        sys.exit(1)
+    class MCPHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
 
+            try:
+                request = json.loads(body)
+            except json.JSONDecodeError:
+                self.send_error(400, "Invalid JSON")
+                return
+
+            response = handle_request(request, token, allowed_repo)
+
+            if response is None:
+                self.send_response(204)
+                self.end_headers()
+                return
+
+            response_body = json.dumps(response).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response_body)))
+            self.end_headers()
+            self.wfile.write(response_body)
+
+        def log_message(self, format, *args):
+            print(f"[mcp-server] {args[0]}", file=sys.stderr)
+
+    return MCPHandler
+
+
+def run_stdio(token: str, allowed_repo: str) -> None:
+    """Run MCP server over stdio."""
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -326,6 +359,37 @@ def main() -> None:
         if response is not None:
             sys.stdout.write(json.dumps(response) + "\n")
             sys.stdout.flush()
+
+
+def run_http(token: str, allowed_repo: str, port: int) -> None:
+    """Run MCP server over HTTP (streamable-http transport)."""
+    handler = make_http_handler(token, allowed_repo)
+    server = HTTPServer(("0.0.0.0", port), handler)
+    print(f"MCP server listening on http://0.0.0.0:{port}/", file=sys.stderr)
+    sys.stderr.flush()
+    server.serve_forever()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="MCP server for GitHub triage tools")
+    parser.add_argument("--http", action="store_true", help="Run as HTTP server")
+    parser.add_argument("--port", type=int, default=8081, help="HTTP port (default: 8081)")
+    args = parser.parse_args()
+
+    token = os.environ.get("MCP_GH_TOKEN")
+    allowed_repo = os.environ.get("MCP_ALLOWED_REPO")
+
+    if not token:
+        print("Error: MCP_GH_TOKEN not set", file=sys.stderr)
+        sys.exit(1)
+    if not allowed_repo:
+        print("Error: MCP_ALLOWED_REPO not set", file=sys.stderr)
+        sys.exit(1)
+
+    if args.http:
+        run_http(token, allowed_repo, args.port)
+    else:
+        run_stdio(token, allowed_repo)
 
 
 if __name__ == "__main__":
