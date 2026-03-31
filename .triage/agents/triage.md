@@ -1,4 +1,4 @@
-ex---
+---
 name: triage
 description: >
   Top-level triage agent. Orchestrates subagents to analyze an issue,
