@@ -188,6 +188,40 @@ def sandbox_ssh(ssh_config_path: str, sandbox_name: str, cmd: str, timeout: int 
     )
 
 
+LOG_DIR = "/tmp/triage-logs"
+
+
+def extract_transcripts(
+    ssh_config_path: str, sandbox_name: str, agent_name: str,
+) -> None:
+    """Copy Claude transcript files out of a sandbox before it's deleted."""
+    os.makedirs(LOG_DIR, exist_ok=True)
+
+    # Find transcript files (Claude stores them in ~/.claude/projects/)
+    result = sandbox_ssh(
+        ssh_config_path, sandbox_name,
+        "find /home -name '*.jsonl' -path '*/.claude/*' 2>/dev/null || true",
+        timeout=10,
+    )
+    files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
+    if not files:
+        print(f"  [{agent_name}] No transcripts found")
+        return
+
+    for remote_path in files:
+        local_name = f"{agent_name}-{os.path.basename(remote_path)}"
+        local_path = os.path.join(LOG_DIR, local_name)
+        try:
+            subprocess.run(
+                ["scp", "-F", ssh_config_path, "-r",
+                 f"openshell-{sandbox_name}:{remote_path}", local_path],
+                check=True, timeout=30, capture_output=True,
+            )
+            print(f"  [{agent_name}] Saved transcript: {local_name}")
+        except Exception as e:
+            print(f"  [{agent_name}] Failed to copy transcript: {e}", file=sys.stderr)
+
+
 def render_policy(
     template_path: Path, owner: str, repo_name: str, issue_number: int,
 ) -> str:
@@ -397,6 +431,12 @@ class SubagentExecutor:
         except Exception as e:
             return 1, f"Error running '{agent_name}': {e}"
         finally:
+            # Extract transcripts before deleting the sandbox
+            if os.path.exists(ssh_config_path):
+                try:
+                    extract_transcripts(ssh_config_path, sandbox_name, agent_name)
+                except Exception as e:
+                    print(f"[executor] Failed to extract transcripts for '{agent_name}': {e}", file=sys.stderr)
             delete_sandbox(sandbox_name)
             if policy_path and os.path.exists(policy_path):
                 os.unlink(policy_path)
@@ -536,6 +576,12 @@ def launch_agent(
     def cleanup():
         if hasattr(cleanup, 'executor_server'):
             cleanup.executor_server.shutdown()
+        # Extract triage transcripts before deleting sandbox
+        if os.path.exists(ssh_config_path):
+            try:
+                extract_transcripts(ssh_config_path, sandbox_name, "triage")
+            except Exception:
+                pass
         delete_sandbox(sandbox_name)
         for path in (mcp_config_file_path, policy_path, ssh_config_path):
             if path and os.path.exists(path):
