@@ -32,6 +32,7 @@ from pathlib import Path
 MCP_PORT = 8081
 EXECUTOR_PORT = 8082
 SANDBOX_WORKSPACE = "/tmp/workspace"
+SANDBOX_CLAUDE_CONFIG = "/tmp/claude-config"
 
 
 def get_token_from_gh_cli() -> str:
@@ -197,12 +198,11 @@ def extract_transcripts(
     """Copy Claude transcript files out of a sandbox before it's deleted."""
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    # Find transcript files (Claude stores them in ~/.claude/projects/)
-    # Search broadly — sandbox user home varies
+    # Find transcript files in the known CLAUDE_CONFIG_DIR path
     result = sandbox_ssh(
         ssh_config_path, sandbox_name,
-        "find / -name '*.jsonl' -path '*/.claude/*' -not -path '/proc/*' -not -path '/sys/*' 2>/dev/null || true",
-        timeout=15,
+        f"find {SANDBOX_CLAUDE_CONFIG} -name '*.jsonl' 2>/dev/null || true",
+        timeout=10,
     )
     files = [f.strip() for f in result.stdout.strip().split("\n") if f.strip()]
     if not files:
@@ -419,6 +419,7 @@ class SubagentExecutor:
                 ["ssh", "-F", ssh_config_path, f"openshell-{sandbox_name}",
                  f"cd {SANDBOX_WORKSPACE} && "
                  f"export PATH={SANDBOX_WORKSPACE}/bin:$PATH && "
+                 f"export CLAUDE_CONFIG_DIR={SANDBOX_CLAUDE_CONFIG} && "
                  f"{vertex_exports}"
                  f"claude --print --agent '{agent_name}' "
                  f"--mcp-config '{mcp_config}' "
@@ -673,6 +674,7 @@ def launch_agent(
 
         env_vars = (
             f"export PATH={SANDBOX_WORKSPACE}/bin:$PATH && "
+            f"export CLAUDE_CONFIG_DIR={SANDBOX_CLAUDE_CONFIG} && "
             f"export REPO='{repo}' && "
             f"export ISSUE_NUMBER='{issue_number}' && "
             f"export MCP_CONFIG_PATH='{sandbox_mcp_config}' && "
