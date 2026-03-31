@@ -626,6 +626,21 @@ def launch_agent(
         # 10b. Copy Vertex AI credentials
         vertex_exports = bootstrap_vertex_creds(ssh_config_path, sandbox_name)
 
+        # 10c. Verify connectivity from sandbox to host services
+        print("Verifying sandbox connectivity...")
+        for port, name in [(MCP_PORT, "MCP server"), (EXECUTOR_PORT, "Executor")]:
+            check = sandbox_ssh(
+                ssh_config_path, sandbox_name,
+                f"curl -s --max-time 5 -o /dev/null -w '%{{http_code}}' "
+                f"http://{host_ip}:{port}/ 2>&1 || echo 'FAIL'",
+                timeout=15,
+            )
+            status = check.stdout.strip()
+            print(f"  {name} ({host_ip}:{port}): {status}")
+            if check.stderr.strip():
+                print(f"    stderr: {check.stderr.strip()}", file=sys.stderr)
+        sys.stdout.flush()
+
         # 11. Run triage agent inside sandbox
         print(f"Running: {prompt}")
         sys.stdout.flush()
