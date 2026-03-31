@@ -56,6 +56,16 @@ network_policies:
         access: allow
     binaries:
       - path: "**"
+  vertex_ai:
+    name: vertex-ai
+    endpoints:
+      - host: "*.googleapis.com"
+        port: 443
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**"
   mcp_server:
     name: mcp-server
     endpoints:

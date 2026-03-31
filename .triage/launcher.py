@@ -227,6 +227,48 @@ def discover_agents(working_dir: Path) -> dict[str, str | None]:
     return agents
 
 
+def get_vertex_env() -> dict[str, str]:
+    """Collect Vertex AI environment variables from the host, if present."""
+    vertex_vars = {}
+    for key in ("CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID",
+                "CLOUD_ML_REGION"):
+        val = os.environ.get(key)
+        if val:
+            vertex_vars[key] = val
+    return vertex_vars
+
+
+def get_vertex_creds_path() -> str | None:
+    """Return the path to the GCP credentials file, if set."""
+    path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if path and os.path.isfile(path):
+        return path
+    return None
+
+
+SANDBOX_CREDS_PATH = f"{SANDBOX_WORKSPACE}/gcp_credentials.json"
+
+
+def bootstrap_vertex_creds(
+    ssh_config_path: str, sandbox_name: str,
+) -> str:
+    """Copy GCP credentials into the sandbox. Returns export commands."""
+    scp = lambda local, remote: sandbox_scp(ssh_config_path, sandbox_name, local, remote)
+
+    vertex_env = get_vertex_env()
+    creds_path = get_vertex_creds_path()
+
+    exports = ""
+    for key, val in vertex_env.items():
+        exports += f"export {key}='{val}' && "
+
+    if creds_path:
+        scp(creds_path, SANDBOX_CREDS_PATH)
+        exports += f"export GOOGLE_APPLICATION_CREDENTIALS='{SANDBOX_CREDS_PATH}' && "
+
+    return exports
+
+
 def bootstrap_agent_sandbox(
     ssh_config_path: str,
     sandbox_name: str,
@@ -330,6 +372,9 @@ class SubagentExecutor:
                 self.working_dir, self.mcp_config_path,
             )
 
+            # 5b. Copy Vertex AI credentials
+            vertex_exports = bootstrap_vertex_creds(ssh_config_path, sandbox_name)
+
             # 6. Run agent
             print(f"[executor] Running '{agent_name}'...", file=sys.stderr)
             mcp_config = f"{SANDBOX_WORKSPACE}/mcp_config.json"
@@ -337,6 +382,7 @@ class SubagentExecutor:
                 ["ssh", "-F", ssh_config_path, f"openshell-{sandbox_name}",
                  f"cd {SANDBOX_WORKSPACE} && "
                  f"export PATH={SANDBOX_WORKSPACE}/bin:$PATH && "
+                 f"{vertex_exports}"
                  f"claude --print --agent '{agent_name}' "
                  f"--mcp-config '{mcp_config}' "
                  f"--strict-mcp-config --dangerously-skip-permissions "
@@ -547,6 +593,9 @@ def launch_agent(
             ssh_config_path, sandbox_name, working_dir, mcp_config_file.name,
         )
 
+        # 6b. Copy Vertex AI credentials
+        vertex_exports = bootstrap_vertex_creds(ssh_config_path, sandbox_name)
+
         # 7. Run triage agent inside sandbox
         print(f"Running: {prompt}")
         sys.stdout.flush()
@@ -557,6 +606,7 @@ def launch_agent(
             f"export ISSUE_NUMBER='{issue_number}' && "
             f"export MCP_CONFIG_PATH='{sandbox_mcp_config}' && "
             f"export SANDBOX_EXECUTOR_URL='http://host.docker.internal:{EXECUTOR_PORT}' && "
+            f"{vertex_exports}"
         )
         process = subprocess.Popen(
             ["ssh", "-F", ssh_config_path, f"openshell-{sandbox_name}",
