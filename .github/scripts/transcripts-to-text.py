@@ -48,31 +48,36 @@ def convert_transcript(jsonl_path: str) -> str:
 
 
 def main():
-    output_dir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/triage-logs"
-    os.makedirs(output_dir, exist_ok=True)
+    log_dir = sys.argv[1] if len(sys.argv) > 1 else "/tmp/triage-logs"
+    os.makedirs(log_dir, exist_ok=True)
 
-    # Find session transcripts
-    patterns = [
-        os.path.expanduser("~/.claude/projects/**/subagents/*.jsonl"),
-        os.path.expanduser("~/.claude/projects/**/*.jsonl"),
-    ]
-
-    found = set()
-    for pattern in patterns:
-        found.update(glob.glob(pattern, recursive=True))
+    # Find .jsonl transcripts already extracted into log_dir by launcher.py
+    found = glob.glob(os.path.join(log_dir, "*.jsonl"))
 
     if not found:
         print("No transcripts found")
         return
 
     for path in sorted(found):
-        name = os.path.basename(path).replace(".jsonl", "")
+        basename = os.path.basename(path).replace(".jsonl", "")
+        # Strip the UUID suffix to get clean agent names
+        # e.g. "duplicate-detector-695a86be-f7dc-..." -> "duplicate-detector"
+        parts = basename.split("-")
+        # UUIDs are 5 hyphen-separated hex groups; find where the UUID starts
+        agent_name = basename
+        for i in range(len(parts)):
+            candidate = "-".join(parts[i:])
+            # Check if the remainder looks like a UUID (8-4-4-4-12 hex)
+            if len(candidate) == 36 and all(c in "0123456789abcdef-" for c in candidate):
+                agent_name = "-".join(parts[:i]) if i > 0 else basename
+                break
+
         text = convert_transcript(path)
         if text:
-            out_path = os.path.join(output_dir, f"{name}.txt")
+            out_path = os.path.join(log_dir, f"{agent_name}.txt")
             with open(out_path, "w") as f:
                 f.write(text)
-            print(f"Converted: {name} ({len(text)} chars)")
+            print(f"Converted: {agent_name} ({len(text)} chars)")
 
 
 if __name__ == "__main__":
