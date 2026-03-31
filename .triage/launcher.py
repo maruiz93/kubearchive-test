@@ -231,7 +231,7 @@ def bootstrap_sandbox(
     # Copy MCP config
     scp(mcp_config_path, f"{SANDBOX_WORKSPACE}/mcp_config.json")
 
-    # Copy binaries
+    # Copy binaries to a writable location (sandbox user can't write to /usr/local/bin)
     openshell_bin = shutil.which("openshell")
     claude_bin = shutil.which("claude")
     if not openshell_bin:
@@ -241,13 +241,15 @@ def bootstrap_sandbox(
         print("Error: claude binary not found in PATH", file=sys.stderr)
         sys.exit(1)
 
-    scp(openshell_bin, "/usr/local/bin/openshell")
-    ssh("chmod +x /usr/local/bin/openshell")
-    scp(claude_bin, "/usr/local/bin/claude")
-    ssh("chmod +x /usr/local/bin/claude")
+    ssh(f"mkdir -p {SANDBOX_WORKSPACE}/bin")
+    scp(openshell_bin, f"{SANDBOX_WORKSPACE}/bin/openshell")
+    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/openshell")
+    scp(claude_bin, f"{SANDBOX_WORKSPACE}/bin/claude")
+    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/claude")
 
     # Configure openshell gateway inside sandbox to reach host gateway
-    ssh("openshell gateway add http://host.docker.internal:8080")
+    ssh(f"PATH={SANDBOX_WORKSPACE}/bin:$PATH "
+        f"openshell gateway add http://host.docker.internal:8080")
 
 
 def launch_agent(
@@ -341,9 +343,10 @@ def launch_agent(
         sys.stdout.flush()
 
         env_vars = (
-            f"REPO='{repo}' "
-            f"ISSUE_NUMBER='{issue_number}' "
-            f"MCP_CONFIG_PATH='{sandbox_mcp_config}'"
+            f"export PATH={SANDBOX_WORKSPACE}/bin:$PATH && "
+            f"export REPO='{repo}' && "
+            f"export ISSUE_NUMBER='{issue_number}' && "
+            f"export MCP_CONFIG_PATH='{sandbox_mcp_config}' && "
         )
         process = subprocess.Popen(
             ["ssh", "-F", ssh_config_path, f"openshell-{sandbox_name}",

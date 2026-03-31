@@ -116,14 +116,15 @@ openshell sandbox ssh-config "$SANDBOX_NAME" > "$SSH_CONFIG"
 SANDBOX_MCP_CONFIG="/tmp/mcp_config.json"
 scp -F "$SSH_CONFIG" "$MCP_CONFIG_PATH" "openshell-${SANDBOX_NAME}:${SANDBOX_MCP_CONFIG}"
 
-# 5. Copy claude binary into the sandbox
+# 5. Copy claude binary into the sandbox (sandbox user can't write to /usr/local/bin)
 CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
 if [[ -z "$CLAUDE_BIN" ]]; then
     echo "Error: claude CLI not found in PATH" >&2
     exit 1
 fi
-scp -F "$SSH_CONFIG" "$CLAUDE_BIN" "openshell-${SANDBOX_NAME}:/usr/local/bin/claude"
-ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" "chmod +x /usr/local/bin/claude"
+ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" "mkdir -p ${WORKSPACE}/bin"
+scp -F "$SSH_CONFIG" "$CLAUDE_BIN" "openshell-${SANDBOX_NAME}:${WORKSPACE}/bin/claude"
+ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" "chmod +x ${WORKSPACE}/bin/claude"
 
 # 6. Set up agent workspace with .claude/ directory structure
 #    The claude --agent CLI looks for agents in .claude/agents/ relative to cwd.
@@ -150,4 +151,4 @@ echo "[run-sandboxed] '${AGENT_NAME}' sandbox ready, running agent via SSH" >&2
 
 # 7. Run the claude agent inside the sandbox via SSH
 ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" \
-    "cd ${WORKSPACE} && claude --print --agent '${AGENT_NAME}' --mcp-config '${SANDBOX_MCP_CONFIG}' --strict-mcp-config --dangerously-skip-permissions '${PROMPT}'"
+    "cd ${WORKSPACE} && export PATH=${WORKSPACE}/bin:\$PATH && claude --print --agent '${AGENT_NAME}' --mcp-config '${SANDBOX_MCP_CONFIG}' --strict-mcp-config --dangerously-skip-permissions '${PROMPT}'"
