@@ -8,7 +8,7 @@
 # `policy set --wait`, runs the agent via SSH, and cleans up.
 #
 # Expects MCP_CONFIG_PATH in env (set by launcher.py).
-# Requires OpenShell to be installed and the gateway running.
+# Requires OpenShell to be installed and the gateway reachable.
 
 set -euo pipefail
 
@@ -55,12 +55,13 @@ if ! command -v openshell &> /dev/null; then
 fi
 
 if ! openshell status &>/dev/null; then
-    echo "Error: OpenShell gateway is not running" >&2
+    echo "Error: OpenShell gateway is not reachable" >&2
     exit 1
 fi
 
 SANDBOX_NAME="triage-${AGENT_NAME}-$$"
 SSH_CONFIG="/tmp/openshell-ssh-${SANDBOX_NAME}.config"
+WORKSPACE="/tmp/workspace"
 
 cleanup() {
     openshell sandbox delete "$SANDBOX_NAME" &>/dev/null || true
@@ -112,13 +113,41 @@ fi
 openshell sandbox ssh-config "$SANDBOX_NAME" > "$SSH_CONFIG"
 
 # 4. Copy MCP config into the sandbox
-#    The MCP config file lives on the host at a temp path that doesn't
-#    exist inside the container. Copy it in so the agent can read it.
 SANDBOX_MCP_CONFIG="/tmp/mcp_config.json"
 scp -F "$SSH_CONFIG" "$MCP_CONFIG_PATH" "openshell-${SANDBOX_NAME}:${SANDBOX_MCP_CONFIG}"
 
+# 5. Copy claude binary into the sandbox
+CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
+if [[ -z "$CLAUDE_BIN" ]]; then
+    echo "Error: claude CLI not found in PATH" >&2
+    exit 1
+fi
+scp -F "$SSH_CONFIG" "$CLAUDE_BIN" "openshell-${SANDBOX_NAME}:/usr/local/bin/claude"
+ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" "chmod +x /usr/local/bin/claude"
+
+# 6. Set up agent workspace with .claude/ directory structure
+#    The claude --agent CLI looks for agents in .claude/agents/ relative to cwd.
+ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" \
+    "mkdir -p ${WORKSPACE}/.claude/agents ${WORKSPACE}/.claude/skills"
+
+# Copy all agent definitions
+if [[ -d "${BASE_DIR}/.claude/agents" ]]; then
+    scp -F "$SSH_CONFIG" -r "${BASE_DIR}/.claude/agents" \
+        "openshell-${SANDBOX_NAME}:${WORKSPACE}/.claude/"
+fi
+
+# Copy all skills
+if [[ -d "${BASE_DIR}/.claude/skills" ]]; then
+    for skill_dir in "${BASE_DIR}/.claude/skills"/*/; do
+        if [[ -d "$skill_dir" ]]; then
+            scp -F "$SSH_CONFIG" -r "$skill_dir" \
+                "openshell-${SANDBOX_NAME}:${WORKSPACE}/.claude/skills/"
+        fi
+    done
+fi
+
 echo "[run-sandboxed] '${AGENT_NAME}' sandbox ready, running agent via SSH" >&2
 
-# 5. Run the claude agent inside the sandbox via SSH
+# 7. Run the claude agent inside the sandbox via SSH
 ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" \
-    "claude --print --agent '${AGENT_NAME}' --mcp-config '${SANDBOX_MCP_CONFIG}' --strict-mcp-config --dangerously-skip-permissions '${PROMPT}'"
+    "cd ${WORKSPACE} && claude --print --agent '${AGENT_NAME}' --mcp-config '${SANDBOX_MCP_CONFIG}' --strict-mcp-config --dangerously-skip-permissions '${PROMPT}'"

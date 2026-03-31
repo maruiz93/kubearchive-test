@@ -5,7 +5,9 @@ Launcher for the scoped-tools agent experiment.
 This script:
 1. Gets a GitHub token (from --token flag, gh CLI, or GitHub App auth)
 2. Starts the MCP server with the token (agent never sees it)
-3. Launches the top-level triage agent, which orchestrates subagents
+3. Creates an OpenShell sandbox for the triage agent
+4. Bootstraps the sandbox (copies binaries, agent files, configs)
+5. Launches the triage agent inside the sandbox
 
 The top-level agent decides which subagents to invoke and in what order.
 Subagents only have read tools. The top-level agent handles all writes.
@@ -15,7 +17,6 @@ import argparse
 import json
 import os
 import shutil
-import signal
 import subprocess
 import sys
 import tempfile
@@ -24,6 +25,7 @@ import urllib.request
 from pathlib import Path
 
 MCP_PORT = 8081
+SANDBOX_WORKSPACE = "/tmp/workspace"
 
 
 def get_token_from_gh_cli() -> str:
@@ -75,18 +77,9 @@ def get_token_from_github_app(pem_path: str, client_id: str, installation_id: in
     return token_data["token"]
 
 
-def launch_agent(
-    token: str,
-    repo: str,
-    issue_number: int,
-    working_dir: Path,
-) -> None:
-    """Launch the top-level triage agent with the MCP server."""
-
+def start_mcp_server(token: str, repo: str, working_dir: Path) -> subprocess.Popen:
+    """Start MCP server as a background HTTP process. Returns the process."""
     mcp_server_path = working_dir / "tools" / "mcp" / "mcp_server.py"
-
-    # Start MCP server as a background HTTP process on the host.
-    # The token lives only in this process — agents connect over HTTP.
     mcp_env = {**os.environ, "MCP_GH_TOKEN": token, "MCP_ALLOWED_REPO": repo}
     mcp_process = subprocess.Popen(
         ["python3", str(mcp_server_path), "--http", "--port", str(MCP_PORT)],
@@ -96,7 +89,6 @@ def launch_agent(
     )
 
     # Wait for MCP server to be ready
-    mcp_ready = False
     for _ in range(20):
         try:
             req = urllib.request.Request(
@@ -106,76 +98,262 @@ def launch_agent(
                 method="POST",
             )
             urllib.request.urlopen(req, timeout=1)
-            mcp_ready = True
-            break
+            return mcp_process
         except Exception:
             time.sleep(0.5)
 
-    if not mcp_ready:
-        print("Error: MCP server failed to start", file=sys.stderr)
-        mcp_process.kill()
+    print("Error: MCP server failed to start", file=sys.stderr)
+    mcp_process.kill()
+    sys.exit(1)
+
+
+def create_sandbox(name: str) -> None:
+    """Create a persistent OpenShell sandbox."""
+    result = subprocess.run(
+        ["timeout", "30", "openshell", "sandbox", "create",
+         "--name", name, "--keep", "--no-auto-providers", "--no-tty"],
+        stdin=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=35,
+    )
+    # timeout exits 124 — sandbox create may exit non-zero after the
+    # interactive shell is killed. Check if the sandbox actually exists.
+    if result.returncode not in (0, 124):
+        check = subprocess.run(
+            ["openshell", "sandbox", "get", name],
+            capture_output=True, timeout=10,
+        )
+        if check.returncode != 0:
+            print(f"Error: sandbox create failed:\n{result.stderr.decode()}", file=sys.stderr)
+            sys.exit(1)
+
+
+def apply_policy(sandbox_name: str, policy_path: str) -> None:
+    """Apply a policy to a sandbox, retrying up to 3 times."""
+    for attempt in range(1, 4):
+        result = subprocess.run(
+            ["openshell", "policy", "set", sandbox_name,
+             "--policy", policy_path, "--wait"],
+            capture_output=True, text=True, timeout=30,
+        )
+        if result.returncode == 0:
+            return
+        print(f"  Policy attempt {attempt} failed, retrying in 3s...", file=sys.stderr)
+        time.sleep(3)
+
+    print("Error: policy set failed after 3 attempts", file=sys.stderr)
+    sys.exit(1)
+
+
+def get_ssh_config(sandbox_name: str, ssh_config_path: str) -> None:
+    """Get SSH config for a sandbox and write to file."""
+    result = subprocess.run(
+        ["openshell", "sandbox", "ssh-config", sandbox_name],
+        capture_output=True, text=True, timeout=10, check=True,
+    )
+    with open(ssh_config_path, "w") as f:
+        f.write(result.stdout)
+
+
+def sandbox_scp(ssh_config: str, sandbox_name: str, local: str, remote: str) -> None:
+    """Copy a file or directory into a sandbox."""
+    subprocess.run(
+        ["scp", "-F", ssh_config, "-r", str(local),
+         f"openshell-{sandbox_name}:{remote}"],
+        check=True, timeout=60,
+    )
+
+
+def sandbox_ssh(ssh_config: str, sandbox_name: str, cmd: str) -> None:
+    """Run a command inside a sandbox."""
+    subprocess.run(
+        ["ssh", "-F", ssh_config, f"openshell-{sandbox_name}", cmd],
+        check=True, timeout=30,
+    )
+
+
+def render_policy(template_path: Path, owner: str, repo_name: str, issue_number: int) -> str:
+    """Render a policy template and return the temp file path."""
+    with open(template_path) as f:
+        content = f.read()
+    content = (
+        content
+        .replace("{{OWNER}}", owner)
+        .replace("{{REPO_NAME}}", repo_name)
+        .replace("{{ISSUE_NUMBER}}", str(issue_number))
+    )
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", prefix="policy_", suffix=".yaml", delete=False,
+    )
+    tmp.write(content)
+    tmp.close()
+    return tmp.name
+
+
+def bootstrap_sandbox(
+    ssh_config: str,
+    sandbox_name: str,
+    working_dir: Path,
+    mcp_config_path: str,
+) -> None:
+    """Copy all required files and binaries into the triage sandbox."""
+    scp = lambda local, remote: sandbox_scp(ssh_config, sandbox_name, local, remote)
+    ssh = lambda cmd: sandbox_ssh(ssh_config, sandbox_name, cmd)
+
+    # Create workspace structure
+    ssh(f"mkdir -p {SANDBOX_WORKSPACE}/.claude/agents "
+        f"{SANDBOX_WORKSPACE}/.claude/skills "
+        f"{SANDBOX_WORKSPACE}/agents "
+        f"{SANDBOX_WORKSPACE}/policies "
+        f"{SANDBOX_WORKSPACE}/tools/scripts")
+
+    # Copy agent definitions
+    # - agents/ for run-sandboxed.sh (reads frontmatter)
+    # - .claude/agents/ for claude --agent CLI
+    for agent_file in (working_dir / "agents").glob("*.md"):
+        scp(str(agent_file), f"{SANDBOX_WORKSPACE}/agents/")
+        scp(str(agent_file), f"{SANDBOX_WORKSPACE}/.claude/agents/")
+
+    # Copy skills for claude --agent CLI
+    for skill_dir in (working_dir / "skills").iterdir():
+        if skill_dir.is_dir():
+            scp(str(skill_dir), f"{SANDBOX_WORKSPACE}/.claude/skills/")
+
+    # Copy policy templates (subagents need these)
+    for policy_file in (working_dir / "policies").glob("*.yaml"):
+        scp(str(policy_file), f"{SANDBOX_WORKSPACE}/policies/")
+
+    # Copy run-sandboxed.sh
+    scp(str(working_dir / "tools" / "scripts" / "run-sandboxed.sh"),
+        f"{SANDBOX_WORKSPACE}/tools/scripts/")
+    ssh(f"chmod +x {SANDBOX_WORKSPACE}/tools/scripts/run-sandboxed.sh")
+
+    # Copy MCP config
+    scp(mcp_config_path, f"{SANDBOX_WORKSPACE}/mcp_config.json")
+
+    # Copy binaries
+    openshell_bin = shutil.which("openshell")
+    claude_bin = shutil.which("claude")
+    if not openshell_bin:
+        print("Error: openshell binary not found in PATH", file=sys.stderr)
+        sys.exit(1)
+    if not claude_bin:
+        print("Error: claude binary not found in PATH", file=sys.stderr)
         sys.exit(1)
 
-    # Build MCP config pointing to the HTTP server.
-    # Agents inside OpenShell sandboxes reach the host via host.docker.internal.
-    # Agents running unsandboxed use localhost.
-    has_openshell = shutil.which("openshell") is not None
-    mcp_host = "host.docker.internal" if has_openshell else "localhost"
+    scp(openshell_bin, "/usr/local/bin/openshell")
+    ssh("chmod +x /usr/local/bin/openshell")
+    scp(claude_bin, "/usr/local/bin/claude")
+    ssh("chmod +x /usr/local/bin/claude")
+
+    # Configure openshell gateway inside sandbox to reach host gateway
+    ssh("openshell gateway add http://host.docker.internal:8080")
+
+
+def launch_agent(
+    token: str,
+    repo: str,
+    issue_number: int,
+    working_dir: Path,
+) -> None:
+    """Launch the top-level triage agent in an OpenShell sandbox."""
+
+    owner, repo_name = repo.split("/", 1)
+    sandbox_name = f"triage-main-{os.getpid()}"
+    ssh_config_path = f"/tmp/openshell-ssh-{sandbox_name}.config"
+    sandbox_mcp_config = f"{SANDBOX_WORKSPACE}/mcp_config.json"
+    prompt = f"Triage issue #{issue_number} in {repo}."
+
+    # Check prerequisites
+    if not shutil.which("openshell"):
+        print("Error: OpenShell is not installed", file=sys.stderr)
+        sys.exit(1)
+    result = subprocess.run(
+        ["openshell", "status"], capture_output=True, timeout=10,
+    )
+    if result.returncode != 0:
+        print("Error: OpenShell gateway is not running", file=sys.stderr)
+        sys.exit(1)
+
+    # 1. Start MCP server
+    mcp_process = start_mcp_server(token, repo, working_dir)
+
+    # Write MCP config (agents connect via host.docker.internal from sandbox)
     mcp_config = {
         "mcpServers": {
             "github-triage": {
                 "type": "http",
-                "url": f"http://{mcp_host}:{MCP_PORT}/",
+                "url": f"http://host.docker.internal:{MCP_PORT}/",
             }
         }
     }
-
-    # Write MCP config to a temp file
     mcp_config_file = tempfile.NamedTemporaryFile(
         mode="w", prefix="mcp_config_", suffix=".json", delete=False,
     )
     json.dump(mcp_config, mcp_config_file)
     mcp_config_file.close()
 
-    # Agent environment has NO GitHub token.
-    # REPO and ISSUE_NUMBER are passed so subagent sandbox policies can scope.
-    agent_env = {
-        k: v for k, v in os.environ.items()
-        if k not in ("GH_TOKEN", "MCP_GH_TOKEN", "GITHUB_TOKEN")
-    }
-    agent_env["REPO"] = repo
-    agent_env["ISSUE_NUMBER"] = str(issue_number)
-    agent_env["REPO_PATH"] = str(working_dir)
-    agent_env["MCP_CONFIG_PATH"] = mcp_config_file.name
-
-    prompt = f"Triage issue #{issue_number} in {repo}."
-    sandbox_script = working_dir / "tools" / "scripts" / "run-sandboxed.sh"
+    # Render triage policy template
+    policy_path = render_policy(
+        working_dir / "policies" / "triage-write.yaml",
+        owner, repo_name, issue_number,
+    )
 
     # --- Log setup ---
     print(f"Triage: {repo}#{issue_number}")
-    print(f"  MCP server:  http://{mcp_host}:{MCP_PORT}/ (pid {mcp_process.pid})")
-    print(f"  Agent token:  in MCP server only")
-    print(f"  Sandbox tool: {sandbox_script}")
-
-    if has_openshell:
-        print("  Sandbox: OpenShell available, policies will be enforced")
-    else:
-        print("  Sandbox: OpenShell NOT found, policies defined but NOT enforced")
-
+    print(f"  MCP server:  http://host.docker.internal:{MCP_PORT}/ (pid {mcp_process.pid})")
+    print(f"  Sandbox:     {sandbox_name}")
+    print(f"  Policy:      policies/triage-write.yaml")
     print("---")
-    print(f"Running: {prompt}")
     sys.stdout.flush()
 
+    def cleanup():
+        subprocess.run(
+            ["openshell", "sandbox", "delete", sandbox_name],
+            capture_output=True, timeout=10,
+        )
+        for path in (mcp_config_file.name, policy_path, ssh_config_path):
+            if os.path.exists(path):
+                os.unlink(path)
+        mcp_process.terminate()
+        mcp_process.wait(timeout=5)
+
     try:
-        # Launch triage agent via run-sandboxed.sh — same tool used by the
-        # triage agent to launch subagents. Handles sandbox creation, policy
-        # template rendering, and graceful fallback if OpenShell is unavailable.
+        # 2. Create triage sandbox
+        print("Creating triage sandbox...")
+        create_sandbox(sandbox_name)
+
+        # 3. Apply triage policy
+        print("Applying triage policy...")
+        apply_policy(sandbox_name, policy_path)
+
+        # 4. Get SSH config
+        get_ssh_config(sandbox_name, ssh_config_path)
+
+        # 5. Bootstrap sandbox with all required files
+        print("Bootstrapping triage sandbox...")
+        bootstrap_sandbox(
+            ssh_config_path, sandbox_name, working_dir, mcp_config_file.name,
+        )
+
+        # 6. Run triage agent inside sandbox
+        print(f"Running: {prompt}")
+        sys.stdout.flush()
+
+        env_vars = (
+            f"REPO='{repo}' "
+            f"ISSUE_NUMBER='{issue_number}' "
+            f"MCP_CONFIG_PATH='{sandbox_mcp_config}'"
+        )
         process = subprocess.Popen(
-            [str(sandbox_script), "triage", prompt],
-            env=agent_env,
+            ["ssh", "-F", ssh_config_path, f"openshell-{sandbox_name}",
+             f"cd {SANDBOX_WORKSPACE} && {env_vars} "
+             f"claude --print --agent triage "
+             f"--mcp-config '{sandbox_mcp_config}' "
+             f"--strict-mcp-config --dangerously-skip-permissions "
+             f"'{prompt}'"],
             stdout=sys.stdout,
             stderr=sys.stderr,
-            cwd=working_dir,
         )
         process.wait(timeout=600)
 
@@ -183,9 +361,7 @@ def launch_agent(
             print(f"\nAgent exited with code {process.returncode}", file=sys.stderr)
             sys.exit(process.returncode)
     finally:
-        os.unlink(mcp_config_file.name)
-        mcp_process.terminate()
-        mcp_process.wait(timeout=5)
+        cleanup()
 
 
 def main() -> None:
