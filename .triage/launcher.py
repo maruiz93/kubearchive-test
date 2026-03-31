@@ -188,50 +188,8 @@ def sandbox_ssh(ssh_config_path: str, sandbox_name: str, cmd: str, timeout: int 
     )
 
 
-def detect_host_ip(ssh_config_path: str, sandbox_name: str) -> str:
-    """Detect the host IP reachable from inside a sandbox.
-
-    Tries multiple methods:
-    1. hostname -I from the host (node IP visible to k3s)
-    2. Default gateway from inside the sandbox
-    """
-    # Method 1: host's primary IP (most reliable for k3s pods)
-    try:
-        result = subprocess.run(
-            ["hostname", "-I"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode == 0:
-            ip = result.stdout.strip().split()[0]
-            if ip:
-                # Verify reachability from inside sandbox
-                check = sandbox_ssh(
-                    ssh_config_path, sandbox_name,
-                    f"ping -c 1 -W 2 {ip} >/dev/null 2>&1 && echo OK || echo FAIL",
-                )
-                if "OK" in check.stdout:
-                    print(f"  Host IP:     {ip} (node IP, verified from sandbox)")
-                    return ip
-                print(f"  Host IP:     {ip} (node IP, NOT reachable from sandbox)", file=sys.stderr)
-    except Exception:
-        pass
-
-    # Method 2: default gateway from inside sandbox
-    result = sandbox_ssh(
-        ssh_config_path, sandbox_name,
-        "ip route | grep default | awk '{print $3}' | head -1",
-    )
-    ip = result.stdout.strip()
-    if ip:
-        print(f"  Host IP:     {ip} (sandbox default gateway)")
-        return ip
-
-    raise RuntimeError("Could not detect host IP")
-
-
 def render_policy(
     template_path: Path, owner: str, repo_name: str, issue_number: int,
-    host_ip: str = "host.docker.internal",
 ) -> str:
     """Render a policy template and return the temp file path."""
     with open(template_path) as f:
@@ -241,7 +199,6 @@ def render_policy(
         .replace("{{OWNER}}", owner)
         .replace("{{REPO_NAME}}", repo_name)
         .replace("{{ISSUE_NUMBER}}", str(issue_number))
-        .replace("host.docker.internal", host_ip)
     )
     tmp = tempfile.NamedTemporaryFile(
         mode="w", prefix="policy_", suffix=".yaml", delete=False,
@@ -364,14 +321,12 @@ class SubagentExecutor:
     """
 
     def __init__(self, working_dir: Path, mcp_config_path: str,
-                 owner: str, repo_name: str, issue_number: int,
-                 host_ip: str = "host.docker.internal"):
+                 owner: str, repo_name: str, issue_number: int):
         self.working_dir = working_dir
         self.mcp_config_path = mcp_config_path
         self.owner = owner
         self.repo_name = repo_name
         self.issue_number = issue_number
-        self.host_ip = host_ip
         self.agents = discover_agents(working_dir)
 
     def run_agent(self, agent_name: str, prompt: str) -> tuple[int, str]:
@@ -397,7 +352,6 @@ class SubagentExecutor:
             # 1. Render policy
             policy_path = render_policy(
                 policy_template, self.owner, self.repo_name, self.issue_number,
-                self.host_ip,
             )
 
             # 2. Create sandbox
@@ -599,25 +553,22 @@ def launch_agent(
         with open(ssh_config_path, "w") as f:
             f.write(ssh_config)
 
-        # 5. Detect host IP from inside sandbox
-        host_ip = detect_host_ip(ssh_config_path, sandbox_name)
-
-        # 6. Render triage policy with detected host IP
+        # 5. Render triage policy
         policy_path = render_policy(
             working_dir / "policies" / "triage-write.yaml",
-            owner, repo_name, issue_number, host_ip,
+            owner, repo_name, issue_number,
         )
 
-        # 7. Apply triage policy
+        # 6. Apply triage policy
         print("Applying triage policy...")
         apply_policy(sandbox_name, policy_path)
 
-        # 8. Write MCP config with detected host IP
+        # 7. Write MCP config (host.docker.internal resolves to host in OpenShell)
         mcp_config = {
             "mcpServers": {
                 "github-triage": {
                     "type": "http",
-                    "url": f"http://{host_ip}:{MCP_PORT}/",
+                    "url": f"http://host.docker.internal:{MCP_PORT}/",
                 }
             }
         }
@@ -628,48 +579,48 @@ def launch_agent(
         mcp_config_tmp.close()
         mcp_config_file_path = mcp_config_tmp.name
 
-        # 9. Start subagent executor (uses MCP config with correct host IP)
+        # 8. Start subagent executor
         executor = SubagentExecutor(
             working_dir, mcp_config_file_path,
-            owner, repo_name, issue_number, host_ip,
+            owner, repo_name, issue_number,
         )
         executor_server = start_executor(executor)
         cleanup.executor_server = executor_server
 
         # --- Log setup ---
         print(f"Triage: {repo}#{issue_number}")
-        print(f"  MCP server:  http://{host_ip}:{MCP_PORT}/ (pid {mcp_process.pid})")
-        print(f"  Executor:    http://{host_ip}:{EXECUTOR_PORT}/")
+        print(f"  MCP server:  http://host.docker.internal:{MCP_PORT}/ (pid {mcp_process.pid})")
+        print(f"  Executor:    http://host.docker.internal:{EXECUTOR_PORT}/")
         print(f"  Sandbox:     {sandbox_name}")
         print(f"  Policy:      policies/triage-write.yaml")
         print("---")
         sys.stdout.flush()
 
-        # 10. Bootstrap sandbox
+        # 9. Bootstrap sandbox
         print("Bootstrapping triage sandbox...")
         bootstrap_triage_sandbox(
             ssh_config_path, sandbox_name, working_dir, mcp_config_file_path,
         )
 
-        # 10b. Copy Vertex AI credentials
+        # 9b. Copy Vertex AI credentials
         vertex_exports = bootstrap_vertex_creds(ssh_config_path, sandbox_name)
 
-        # 10c. Verify connectivity from sandbox to host services
+        # 9c. Verify connectivity from sandbox to host services
         print("Verifying sandbox connectivity...")
         for port, name in [(MCP_PORT, "MCP server"), (EXECUTOR_PORT, "Executor")]:
             check = sandbox_ssh(
                 ssh_config_path, sandbox_name,
                 f"curl -s --max-time 5 -o /dev/null -w '%{{http_code}}' "
-                f"http://{host_ip}:{port}/ 2>&1 || echo 'FAIL'",
+                f"http://host.docker.internal:{port}/ 2>&1 || echo 'FAIL'",
                 timeout=15,
             )
             status = check.stdout.strip()
-            print(f"  {name} ({host_ip}:{port}): {status}")
+            print(f"  {name} (host.docker.internal:{port}): {status}")
             if check.stderr.strip():
                 print(f"    stderr: {check.stderr.strip()}", file=sys.stderr)
         sys.stdout.flush()
 
-        # 11. Run triage agent inside sandbox
+        # 10. Run triage agent inside sandbox
         print(f"Running: {prompt}")
         sys.stdout.flush()
 
@@ -678,7 +629,7 @@ def launch_agent(
             f"export REPO='{repo}' && "
             f"export ISSUE_NUMBER='{issue_number}' && "
             f"export MCP_CONFIG_PATH='{sandbox_mcp_config}' && "
-            f"export SANDBOX_EXECUTOR_URL='http://{host_ip}:{EXECUTOR_PORT}' && "
+            f"export SANDBOX_EXECUTOR_URL='http://host.docker.internal:{EXECUTOR_PORT}' && "
             f"{vertex_exports}"
         )
         process = subprocess.Popen(

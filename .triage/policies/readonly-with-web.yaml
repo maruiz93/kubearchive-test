@@ -71,8 +71,12 @@ network_policies:
     endpoints:
       - host: host.docker.internal
         port: 8081
-        protocol: tcp
+        protocol: rest
         enforcement: enforce
-        access: allow
+        access: full
+        allowed_ips:
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "192.168.0.0/16"
     binaries:
       - path: "**"
