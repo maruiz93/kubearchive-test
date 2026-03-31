@@ -21,6 +21,11 @@ def convert_transcript(jsonl_path: str) -> str:
         if not content:
             continue
 
+        # content can be a plain string or a list of blocks
+        if isinstance(content, str):
+            lines.append(f"[{role.upper()}] {content}")
+            continue
+
         for block in content:
             if isinstance(block, str):
                 lines.append(f"[{role.upper()}] {block}")
