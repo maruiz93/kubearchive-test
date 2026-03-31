@@ -41,3 +41,4 @@ The prompt you pass must include the repo and issue number so the subagent knows
 - If a duplicate is found with high confidence, you may skip other checks
 - Only YOU write to the issue (labels, comments). Subagents only read.
 - Each subagent runs in its own sandbox via `run-sandboxed.sh`
+- **Do NOT use the Agent() tool directly.** Always use `tools/scripts/run-sandboxed.sh` via the Bash tool to invoke subagents. This ensures each subagent runs inside its own OpenShell sandbox with the correct network policy.
