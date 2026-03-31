@@ -8,6 +8,7 @@
 # `policy set --wait`, runs the agent via SSH, and cleans up.
 #
 # Expects MCP_CONFIG_PATH in env (set by launcher.py).
+# Requires OpenShell to be installed and the gateway running.
 
 set -euo pipefail
 
@@ -26,24 +27,16 @@ fi
 # Read the sandbox field from agent frontmatter
 POLICY=$(sed -n '/^---$/,/^---$/{ /^sandbox:/{ s/^sandbox: *//; p; q; } }' "$AGENT_FILE")
 
-run_unsandboxed() {
-    echo "[run-sandboxed] '${AGENT_NAME}' running unsandboxed${1:+ ($1)}" >&2
-    exec claude --print \
-        --agent "$AGENT_NAME" \
-        --mcp-config "$MCP_CONFIG_PATH" \
-        --strict-mcp-config \
-        --dangerously-skip-permissions \
-        "$PROMPT"
-}
-
 if [[ -z "$POLICY" ]]; then
-    run_unsandboxed "no sandbox policy"
+    echo "Error: no sandbox policy defined for agent '${AGENT_NAME}'" >&2
+    exit 1
 fi
 
 POLICY_TEMPLATE="${BASE_DIR}/${POLICY}"
 
 if [[ ! -f "$POLICY_TEMPLATE" ]]; then
-    run_unsandboxed "policy not found: ${POLICY_TEMPLATE}"
+    echo "Error: policy template not found: ${POLICY_TEMPLATE}" >&2
+    exit 1
 fi
 
 # Substitute runtime values into policy template.
@@ -57,11 +50,13 @@ sed -e "s/{{OWNER}}/${OWNER}/g" \
     "$POLICY_TEMPLATE" > "$POLICY_PATH"
 
 if ! command -v openshell &> /dev/null; then
-    run_unsandboxed "OpenShell not installed, would use: ${POLICY}"
+    echo "Error: OpenShell is not installed" >&2
+    exit 1
 fi
 
 if ! openshell status &>/dev/null; then
-    run_unsandboxed "OpenShell gateway not running, would use: ${POLICY}"
+    echo "Error: OpenShell gateway is not running" >&2
+    exit 1
 fi
 
 SANDBOX_NAME="triage-${AGENT_NAME}-$$"
@@ -87,11 +82,10 @@ if ! timeout 30 openshell sandbox create \
     # timeout exits 124, sandbox create may exit non-zero after the
     # interactive shell is killed — check if the sandbox exists
     if ! openshell sandbox get "$SANDBOX_NAME" &>/dev/null; then
-        echo "[run-sandboxed] OpenShell sandbox create failed, falling back" >&2
+        echo "[run-sandboxed] OpenShell sandbox create failed:" >&2
         cat /tmp/openshell-err-$$.log >&2 2>/dev/null
         rm -f /tmp/openshell-err-$$.log
-        trap - EXIT
-        run_unsandboxed "sandbox create failed"
+        exit 1
     fi
 fi
 rm -f /tmp/openshell-err-$$.log
@@ -110,8 +104,8 @@ for attempt in 1 2 3; do
 done
 
 if [[ "$POLICY_APPLIED" != "true" ]]; then
-    echo "[run-sandboxed] Policy set failed after 3 attempts, falling back" >&2
-    run_unsandboxed "policy set failed"
+    echo "Error: policy set failed after 3 attempts" >&2
+    exit 1
 fi
 
 # 3. Get SSH config

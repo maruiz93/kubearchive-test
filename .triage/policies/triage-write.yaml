@@ -2,6 +2,7 @@ version: 1
 
 # Policy for the triage agent (orchestrator).
 # Read-write access to GitHub API (post comments, add labels).
+# Access to OpenShell gateway for creating sub-sandboxes.
 # No external web, no local filesystem beyond sandbox.
 #
 # Placeholders {{OWNER}}, {{REPO_NAME}}, and {{ISSUE_NUMBER}} are substituted
@@ -46,6 +47,23 @@ network_policies:
     endpoints:
       - host: host.docker.internal
         port: 8081
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+    binaries:
+      - path: "**"
+  openshell_gateway:
+    name: openshell-gateway
+    endpoints:
+      # Gateway API for sandbox lifecycle (create, policy set, ssh-config, delete)
+      - host: host.docker.internal
+        port: 8080
+        protocol: tcp
+        enforcement: enforce
+        access: allow
+      # SSH to sub-sandboxes (dynamic ports assigned by gateway)
+      - host: host.docker.internal
+        port: 2222-65535
         protocol: tcp
         enforcement: enforce
         access: allow
