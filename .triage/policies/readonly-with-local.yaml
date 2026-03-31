@@ -1,34 +1,27 @@
 version: 1
 
 # Policy for the reproducibility-verifier.
-# Can read the original issue + read/run against the local repo checkout.
-# NO external web access beyond the GitHub API for the original issue.
+# Read-only GitHub API + local filesystem read access.
+# No external web access.
 
 filesystem_policy:
-  read_only: [/usr, /lib, /etc, "${REPO_PATH}"]
-  read_write: [/tmp]
-
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log, /sandbox]
+  read_write: [/tmp, /dev/null]
+landlock:
+  compatibility: best_effort
 process:
   run_as_user: sandbox
+  run_as_group: sandbox
 
 network_policies:
-  github_issue:
+  github_api:
+    name: github-api-readonly
     endpoints:
       - host: api.github.com
         port: 443
         protocol: rest
         enforcement: enforce
-        rules:
-          - allow:
-              method: GET
-              path: "/repos/${REPO}/issues/${ISSUE_NUMBER}"
-          - allow:
-              method: GET
-              path: "/repos/${REPO}/issues/${ISSUE_NUMBER}/comments"
+        access: read-only
     binaries:
-      - { path: "**" }
-  deny_all:
-    endpoints:
-      - host: "**"
-        enforcement: enforce
-        access: deny
+      - path: "**"

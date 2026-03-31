@@ -1,37 +1,27 @@
 version: 1
 
-# Policy for the top-level triage agent.
-# Write-only: can comment and label the original issue.
-# Cannot read issues — subagents do all reading.
+# Policy for the triage agent (orchestrator).
+# Read-write access to GitHub API (post comments, add labels).
+# No external web, no local filesystem beyond sandbox.
 
 filesystem_policy:
-  read_only: [/usr, /lib, /etc, /sandbox]
-  read_write: [/tmp]
-
+  include_workdir: true
+  read_only: [/usr, /lib, /proc, /dev/urandom, /app, /etc, /var/log]
+  read_write: [/sandbox, /tmp, /dev/null]
+landlock:
+  compatibility: best_effort
 process:
   run_as_user: sandbox
+  run_as_group: sandbox
 
 network_policies:
-  github_write:
+  github_api:
+    name: github-api-readwrite
     endpoints:
       - host: api.github.com
         port: 443
         protocol: rest
         enforcement: enforce
-        rules:
-          - allow:
-              method: POST
-              path: "/repos/${REPO}/issues/${ISSUE_NUMBER}/comments"
-          - allow:
-              method: POST
-              path: "/repos/${REPO}/issues/${ISSUE_NUMBER}/labels"
-          - allow:
-              method: PATCH
-              path: "/repos/${REPO}/issues/${ISSUE_NUMBER}"
+        access: read-write
     binaries:
-      - { path: "**" }
-  deny_all:
-    endpoints:
-      - host: "**"
-        enforcement: enforce
-        access: deny
+      - path: "**"

@@ -4,8 +4,8 @@
 # Usage: run-sandboxed.sh <agent-name> <prompt>
 #
 # Reads the agent's sandbox policy from its definition,
-# wraps `claude --print --agent <name>` in OpenShell,
-# and returns the agent's output.
+# creates an OpenShell sandbox, applies the policy via
+# `policy set --wait`, runs the agent via SSH, and cleans up.
 #
 # Expects MCP_CONFIG_PATH in env (set by launcher.py).
 
@@ -26,19 +26,14 @@ fi
 # Read the sandbox field from agent frontmatter
 POLICY=$(sed -n '/^---$/,/^---$/{ /^sandbox:/{ s/^sandbox: *//; p; q; } }' "$AGENT_FILE")
 
-# Build the claude command
-CLAUDE_CMD=(
-    claude --print
-    --agent "$AGENT_NAME"
-    --mcp-config "$MCP_CONFIG_PATH"
-    --strict-mcp-config
-    --dangerously-skip-permissions
-    "$PROMPT"
-)
-
 run_unsandboxed() {
     echo "[run-sandboxed] '${AGENT_NAME}' running unsandboxed${1:+ ($1)}" >&2
-    exec "${CLAUDE_CMD[@]}"
+    exec claude --print \
+        --agent "$AGENT_NAME" \
+        --mcp-config "$MCP_CONFIG_PATH" \
+        --strict-mcp-config \
+        --dangerously-skip-permissions \
+        "$PROMPT"
 }
 
 if [[ -z "$POLICY" ]]; then
@@ -55,19 +50,53 @@ if ! command -v openshell &> /dev/null; then
     run_unsandboxed "OpenShell not installed, would use: ${POLICY}"
 fi
 
-# Try sandbox create with policy — fall back to unsandboxed if the CLI
-# doesn't support the flags we need (OpenShell is still alpha).
-echo "[run-sandboxed] Running '${AGENT_NAME}' in sandbox: ${POLICY}" >&2
-openshell sandbox create \
-    --no-keep \
-    --no-auto-providers \
-    --policy "$POLICY_PATH" \
-    -- "${CLAUDE_CMD[@]}" 2>/tmp/openshell-err-$$.log \
-&& exit 0
+if ! openshell status &>/dev/null; then
+    run_unsandboxed "OpenShell gateway not running, would use: ${POLICY}"
+fi
 
-# If openshell failed (e.g. --policy not supported), fall back
-OPENSHELL_EXIT=$?
-echo "[run-sandboxed] OpenShell sandbox failed (exit $OPENSHELL_EXIT), falling back to unsandboxed" >&2
-cat /tmp/openshell-err-$$.log >&2 2>/dev/null
+SANDBOX_NAME="triage-${AGENT_NAME}-$$"
+SSH_CONFIG="/tmp/openshell-ssh-${SANDBOX_NAME}.config"
+
+cleanup() {
+    openshell sandbox delete "$SANDBOX_NAME" &>/dev/null || true
+    rm -f "$SSH_CONFIG"
+}
+trap cleanup EXIT
+
+echo "[run-sandboxed] Running '${AGENT_NAME}' in sandbox: ${POLICY}" >&2
+
+# 1. Create a persistent sandbox
+#    `sandbox create` always opens an interactive shell, so we use
+#    `timeout` to let it create the sandbox and then move on.
+if ! timeout 30 openshell sandbox create \
+    --name "$SANDBOX_NAME" \
+    --keep \
+    --no-auto-providers \
+    --no-tty </dev/null 2>/tmp/openshell-err-$$.log; then
+
+    # timeout exits 124, sandbox create may exit non-zero after the
+    # interactive shell is killed — check if the sandbox exists
+    if ! openshell sandbox get "$SANDBOX_NAME" &>/dev/null; then
+        echo "[run-sandboxed] OpenShell sandbox create failed, falling back" >&2
+        cat /tmp/openshell-err-$$.log >&2 2>/dev/null
+        rm -f /tmp/openshell-err-$$.log
+        trap - EXIT
+        run_unsandboxed "sandbox create failed"
+    fi
+fi
 rm -f /tmp/openshell-err-$$.log
-exec "${CLAUDE_CMD[@]}"
+
+# 2. Apply the custom policy (replaces built-in defaults)
+if ! openshell policy set "$SANDBOX_NAME" --policy "$POLICY_PATH" --wait 2>&1; then
+    echo "[run-sandboxed] Policy set failed, falling back" >&2
+    run_unsandboxed "policy set failed"
+fi
+
+# 3. Get SSH config
+openshell sandbox ssh-config "$SANDBOX_NAME" > "$SSH_CONFIG"
+
+echo "[run-sandboxed] '${AGENT_NAME}' sandbox ready, running agent via SSH" >&2
+
+# 4. Run the claude agent inside the sandbox via SSH
+ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" \
+    "claude --print --agent '${AGENT_NAME}' --mcp-config '${MCP_CONFIG_PATH}' --strict-mcp-config --dangerously-skip-permissions '${PROMPT}'"

@@ -63,3 +63,4 @@ bundle.Dockerfile
 
 # Claude Code local settings (but track skills)
 .claude/settings.local.json
+.idea/
