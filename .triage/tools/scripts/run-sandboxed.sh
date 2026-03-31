@@ -117,8 +117,14 @@ fi
 # 3. Get SSH config
 openshell sandbox ssh-config "$SANDBOX_NAME" > "$SSH_CONFIG"
 
+# 4. Copy MCP config into the sandbox
+#    The MCP config file lives on the host at a temp path that doesn't
+#    exist inside the container. Copy it in so the agent can read it.
+SANDBOX_MCP_CONFIG="/tmp/mcp_config.json"
+scp -F "$SSH_CONFIG" "$MCP_CONFIG_PATH" "openshell-${SANDBOX_NAME}:${SANDBOX_MCP_CONFIG}"
+
 echo "[run-sandboxed] '${AGENT_NAME}' sandbox ready, running agent via SSH" >&2
 
-# 4. Run the claude agent inside the sandbox via SSH
+# 5. Run the claude agent inside the sandbox via SSH
 ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" \
-    "claude --print --agent '${AGENT_NAME}' --mcp-config '${MCP_CONFIG_PATH}' --strict-mcp-config --dangerously-skip-permissions '${PROMPT}'"
+    "claude --print --agent '${AGENT_NAME}' --mcp-config '${SANDBOX_MCP_CONFIG}' --strict-mcp-config --dangerously-skip-permissions '${PROMPT}'"
