@@ -189,16 +189,44 @@ def sandbox_ssh(ssh_config_path: str, sandbox_name: str, cmd: str, timeout: int 
 
 
 def detect_host_ip(ssh_config_path: str, sandbox_name: str) -> str:
-    """Detect the host IP from inside a sandbox (default gateway)."""
+    """Detect the host IP reachable from inside a sandbox.
+
+    Tries multiple methods:
+    1. hostname -I from the host (node IP visible to k3s)
+    2. Default gateway from inside the sandbox
+    """
+    # Method 1: host's primary IP (most reliable for k3s pods)
+    try:
+        result = subprocess.run(
+            ["hostname", "-I"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            ip = result.stdout.strip().split()[0]
+            if ip:
+                # Verify reachability from inside sandbox
+                check = sandbox_ssh(
+                    ssh_config_path, sandbox_name,
+                    f"ping -c 1 -W 2 {ip} >/dev/null 2>&1 && echo OK || echo FAIL",
+                )
+                if "OK" in check.stdout:
+                    print(f"  Host IP:     {ip} (node IP, verified from sandbox)")
+                    return ip
+                print(f"  Host IP:     {ip} (node IP, NOT reachable from sandbox)", file=sys.stderr)
+    except Exception:
+        pass
+
+    # Method 2: default gateway from inside sandbox
     result = sandbox_ssh(
         ssh_config_path, sandbox_name,
         "ip route | grep default | awk '{print $3}' | head -1",
     )
     ip = result.stdout.strip()
-    if not ip:
-        raise RuntimeError("Could not detect host IP from inside sandbox")
-    print(f"  Host IP:     {ip} (detected from sandbox)")
-    return ip
+    if ip:
+        print(f"  Host IP:     {ip} (sandbox default gateway)")
+        return ip
+
+    raise RuntimeError("Could not detect host IP")
 
 
 def render_policy(
