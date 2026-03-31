@@ -87,8 +87,20 @@ fi
 rm -f /tmp/openshell-err-$$.log
 
 # 2. Apply the custom policy (replaces built-in defaults)
-if ! openshell policy set "$SANDBOX_NAME" --policy "$POLICY_PATH" --wait 2>&1; then
-    echo "[run-sandboxed] Policy set failed, falling back" >&2
+#    Retry up to 3 times — the first sandbox after gateway start can
+#    hit a cold-start timeout while the policy engine initializes.
+POLICY_APPLIED=false
+for attempt in 1 2 3; do
+    if openshell policy set "$SANDBOX_NAME" --policy "$POLICY_PATH" --wait 2>&1; then
+        POLICY_APPLIED=true
+        break
+    fi
+    echo "[run-sandboxed] Policy set attempt $attempt failed, retrying in 3s..." >&2
+    sleep 3
+done
+
+if [[ "$POLICY_APPLIED" != "true" ]]; then
+    echo "[run-sandboxed] Policy set failed after 3 attempts, falling back" >&2
     run_unsandboxed "policy set failed"
 fi
 
