@@ -117,14 +117,16 @@ def start_mcp_server(token: str, repo: str, working_dir: Path) -> subprocess.Pop
 
 
 def create_sandbox(name: str) -> None:
-    """Create a persistent OpenShell sandbox."""
+    """Create a persistent OpenShell sandbox and wait for it to be ready."""
     result = subprocess.run(
-        ["timeout", "30", "openshell", "sandbox", "create",
+        ["timeout", "60", "openshell", "sandbox", "create",
          "--name", name, "--keep", "--no-auto-providers", "--no-tty"],
         stdin=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
-        timeout=35,
+        timeout=65,
     )
+    # timeout exits 124 — sandbox create may exit non-zero after the
+    # interactive shell is killed. Check if the sandbox actually exists.
     if result.returncode not in (0, 124):
         check = subprocess.run(
             ["openshell", "sandbox", "get", name],
@@ -132,6 +134,17 @@ def create_sandbox(name: str) -> None:
         )
         if check.returncode != 0:
             raise RuntimeError(f"Sandbox create failed: {result.stderr.decode()}")
+
+    # Wait for sandbox to be fully ready (image pull can take a while)
+    for _ in range(30):
+        check = subprocess.run(
+            ["openshell", "sandbox", "get", name],
+            capture_output=True, text=True, timeout=10,
+        )
+        if check.returncode == 0 and "Ready" in check.stdout:
+            return
+        time.sleep(2)
+    raise RuntimeError(f"Sandbox '{name}' not ready after 60s")
 
 
 def apply_policy(sandbox_name: str, policy_path: str) -> None:
