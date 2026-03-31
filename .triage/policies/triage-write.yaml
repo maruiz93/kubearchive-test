@@ -3,6 +3,9 @@ version: 1
 # Policy for the triage agent (orchestrator).
 # Read-write access to GitHub API (post comments, add labels).
 # No external web, no local filesystem beyond sandbox.
+#
+# Placeholders {{OWNER}}, {{REPO_NAME}}, and {{ISSUE_NUMBER}} are substituted
+# at runtime by run-sandboxed.sh using REPO and ISSUE_NUMBER env vars.
 
 filesystem_policy:
   include_workdir: true
@@ -21,7 +24,20 @@ network_policies:
       - host: api.github.com
         port: 443
         protocol: rest
+        tls: terminate
         enforcement: enforce
-        access: read-write
+        rules:
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}
+          - allow:
+              method: POST
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}/comments
+          - allow:
+              method: POST
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}/labels
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/labels
     binaries:
       - path: "**"

@@ -2,6 +2,9 @@ version: 1
 
 # Policy for the completeness-assessor.
 # Read-only GitHub API + HTTPS GET to any host (fetch external links).
+#
+# Placeholders {{OWNER}}, {{REPO_NAME}}, and {{ISSUE_NUMBER}} are substituted
+# at runtime by run-sandboxed.sh using REPO and ISSUE_NUMBER env vars.
 
 filesystem_policy:
   include_workdir: true
@@ -20,8 +23,12 @@ network_policies:
       - host: api.github.com
         port: 443
         protocol: rest
+        tls: terminate
         enforcement: enforce
-        access: read-only
+        rules:
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}
     binaries:
       - path: "**"
   external_web:

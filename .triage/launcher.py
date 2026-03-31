@@ -79,7 +79,7 @@ def launch_agent(
 ) -> None:
     """Launch the top-level triage agent with the MCP server."""
 
-    mcp_server_path = working_dir / "tools" / "mcp_server.py"
+    mcp_server_path = working_dir / "tools" / "mcp" / "mcp_server.py"
 
     # Build MCP config JSON for the GitHub triage tools server.
     # The token is passed via env to the MCP server process, not to the agent.
@@ -105,7 +105,7 @@ def launch_agent(
     mcp_config_file.close()
 
     # Agent environment has NO GitHub token.
-    # REPO and ISSUE_NUMBER are passed so sandbox policies can scope to the original issue.
+    # REPO and ISSUE_NUMBER are passed so subagent sandbox policies can scope.
     agent_env = {
         k: v for k, v in os.environ.items()
         if k not in ("GH_TOKEN", "MCP_GH_TOKEN", "GITHUB_TOKEN")
@@ -115,46 +115,15 @@ def launch_agent(
     agent_env["REPO_PATH"] = str(working_dir)
     agent_env["MCP_CONFIG_PATH"] = mcp_config_file.name
 
-    agent_command = [
-        "claude",
-        "--print",
-        "--verbose",
-        "--agent", "triage",
-        "--mcp-config", mcp_config_file.name,
-        "--strict-mcp-config",
-        "--dangerously-skip-permissions",
-    ]
-
     prompt = f"Triage issue #{issue_number} in {repo}."
+    sandbox_script = working_dir / "tools" / "scripts" / "run-sandboxed.sh"
 
     # --- Log setup ---
     print(f"Triage: {repo}#{issue_number}")
     print(f"  MCP server:  {mcp_server_path}")
     print(f"  Agent token:  stripped from environment")
+    print(f"  Sandbox tool: {sandbox_script}")
 
-    # Log agent tools
-    agents_dir = working_dir / "agents"
-    for agent_file in sorted(agents_dir.glob("*.md")):
-        name = agent_file.stem
-        tools_line = ""
-        sandbox_line = ""
-        in_fm = False
-        with open(agent_file) as f:
-            for line in f:
-                if line.strip() == "---":
-                    if in_fm:
-                        break
-                    in_fm = True
-                    continue
-                if in_fm and line.startswith("tools:"):
-                    tools_line = line.split(":", 1)[1].strip()
-                if in_fm and line.startswith("sandbox:"):
-                    sandbox_line = line.split(":", 1)[1].strip()
-        print(f"  [{name}] tools: {tools_line or 'none'}")
-        if sandbox_line:
-            print(f"  [{name}] sandbox: {sandbox_line}")
-
-    # Log sandbox status
     has_openshell = shutil.which("openshell") is not None
     if has_openshell:
         print("  Sandbox: OpenShell available, policies will be enforced")
@@ -166,8 +135,11 @@ def launch_agent(
     sys.stdout.flush()
 
     try:
+        # Launch triage agent via run-sandboxed.sh — same tool used by the
+        # triage agent to launch subagents. Handles sandbox creation, policy
+        # template rendering, and graceful fallback if OpenShell is unavailable.
         process = subprocess.Popen(
-            [*agent_command, prompt],
+            [str(sandbox_script), "triage", prompt],
             env=agent_env,
             stdout=sys.stdout,
             stderr=sys.stderr,

@@ -63,7 +63,7 @@ jobs:
 
       - name: Convert transcripts to plain text
         if: always()
-        run: python3 .triage/scripts/transcripts-to-text.py /tmp/triage-logs
+        run: python3 .github/scripts/transcripts-to-text.py /tmp/triage-logs
 
       - name: Upload triage logs
         if: always()

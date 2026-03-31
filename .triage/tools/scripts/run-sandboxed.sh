@@ -15,7 +15,7 @@ AGENT_NAME="$1"
 PROMPT="$2"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BASE_DIR="$(dirname "$SCRIPT_DIR")"
+BASE_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 AGENT_FILE="${BASE_DIR}/agents/${AGENT_NAME}.md"
 
 if [[ ! -f "$AGENT_FILE" ]]; then
@@ -40,11 +40,21 @@ if [[ -z "$POLICY" ]]; then
     run_unsandboxed "no sandbox policy"
 fi
 
-POLICY_PATH="${BASE_DIR}/${POLICY}"
+POLICY_TEMPLATE="${BASE_DIR}/${POLICY}"
 
-if [[ ! -f "$POLICY_PATH" ]]; then
-    run_unsandboxed "policy not found: ${POLICY_PATH}"
+if [[ ! -f "$POLICY_TEMPLATE" ]]; then
+    run_unsandboxed "policy not found: ${POLICY_TEMPLATE}"
 fi
+
+# Substitute runtime values into policy template.
+# REPO (org/repo) and ISSUE_NUMBER are set by launcher.py.
+OWNER="${REPO%%/*}"
+REPO_NAME="${REPO##*/}"
+POLICY_PATH="/tmp/policy-${AGENT_NAME}-$$.yaml"
+sed -e "s/{{OWNER}}/${OWNER}/g" \
+    -e "s/{{REPO_NAME}}/${REPO_NAME}/g" \
+    -e "s/{{ISSUE_NUMBER}}/${ISSUE_NUMBER}/g" \
+    "$POLICY_TEMPLATE" > "$POLICY_PATH"
 
 if ! command -v openshell &> /dev/null; then
     run_unsandboxed "OpenShell not installed, would use: ${POLICY}"
@@ -59,7 +69,7 @@ SSH_CONFIG="/tmp/openshell-ssh-${SANDBOX_NAME}.config"
 
 cleanup() {
     openshell sandbox delete "$SANDBOX_NAME" &>/dev/null || true
-    rm -f "$SSH_CONFIG"
+    rm -f "$SSH_CONFIG" "$POLICY_PATH"
 }
 trap cleanup EXIT
 

@@ -3,6 +3,9 @@ version: 1
 # Policy for the duplicate-detector.
 # Read-only access to GitHub API (search for duplicates).
 # No write access, no external web, no local filesystem beyond sandbox.
+#
+# Placeholders {{OWNER}} and {{REPO_NAME}} are substituted at runtime
+# by run-sandboxed.sh using REPO env var (set by launcher.py).
 
 filesystem_policy:
   include_workdir: true
@@ -21,7 +24,17 @@ network_policies:
       - host: api.github.com
         port: 443
         protocol: rest
+        tls: terminate
         enforcement: enforce
-        access: read-only
+        rules:
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/*
+          - allow:
+              method: GET
+              path: /search/issues
     binaries:
       - path: "**"
