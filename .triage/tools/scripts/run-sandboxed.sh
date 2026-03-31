@@ -3,17 +3,38 @@
 #
 # Usage: run-sandboxed.sh <agent-name> <prompt>
 #
-# Reads the agent's sandbox policy from its definition,
-# creates an OpenShell sandbox, applies the policy via
-# `policy set --wait`, runs the agent via SSH, and cleans up.
+# Two modes of operation:
+# 1. If SANDBOX_EXECUTOR_URL is set: delegates to the host-side executor
+#    HTTP service, which creates and manages the sandbox. Used when running
+#    inside a sandbox (the triage agent can't create sandboxes directly).
+# 2. Otherwise: creates the sandbox directly using openshell CLI.
+#    Used when running on the host.
 #
 # Expects MCP_CONFIG_PATH in env (set by launcher.py).
-# Requires OpenShell to be installed and the gateway reachable.
 
 set -euo pipefail
 
 AGENT_NAME="$1"
 PROMPT="$2"
+
+# --- Mode 1: Delegate to executor (when running inside a sandbox) ---
+
+if [[ -n "${SANDBOX_EXECUTOR_URL:-}" ]]; then
+    echo "[run-sandboxed] Delegating '${AGENT_NAME}' to executor at ${SANDBOX_EXECUTOR_URL}" >&2
+
+    RESPONSE=$(curl -s --max-time 300 -X POST \
+        "${SANDBOX_EXECUTOR_URL}/run/${AGENT_NAME}" \
+        --data-raw "$PROMPT")
+
+    # Parse JSON response
+    EXIT_CODE=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('exit_code', 1))" 2>/dev/null || echo 1)
+    OUTPUT=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('output', ''))" 2>/dev/null || echo "$RESPONSE")
+
+    echo "$OUTPUT"
+    exit "$EXIT_CODE"
+fi
+
+# --- Mode 2: Direct sandbox creation (when running on the host) ---
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BASE_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
@@ -40,7 +61,6 @@ if [[ ! -f "$POLICY_TEMPLATE" ]]; then
 fi
 
 # Substitute runtime values into policy template.
-# REPO (org/repo) and ISSUE_NUMBER are set by launcher.py.
 OWNER="${REPO%%/*}"
 REPO_NAME="${REPO##*/}"
 POLICY_PATH="/tmp/policy-${AGENT_NAME}-$$.yaml"
@@ -72,16 +92,12 @@ trap cleanup EXIT
 echo "[run-sandboxed] Running '${AGENT_NAME}' in sandbox: ${POLICY}" >&2
 
 # 1. Create a persistent sandbox
-#    `sandbox create` always opens an interactive shell, so we use
-#    `timeout` to let it create the sandbox and then move on.
 if ! timeout 30 openshell sandbox create \
     --name "$SANDBOX_NAME" \
     --keep \
     --no-auto-providers \
     --no-tty </dev/null 2>/tmp/openshell-err-$$.log; then
 
-    # timeout exits 124, sandbox create may exit non-zero after the
-    # interactive shell is killed — check if the sandbox exists
     if ! openshell sandbox get "$SANDBOX_NAME" &>/dev/null; then
         echo "[run-sandboxed] OpenShell sandbox create failed:" >&2
         cat /tmp/openshell-err-$$.log >&2 2>/dev/null
@@ -91,9 +107,7 @@ if ! timeout 30 openshell sandbox create \
 fi
 rm -f /tmp/openshell-err-$$.log
 
-# 2. Apply the custom policy (replaces built-in defaults)
-#    Retry up to 3 times — the first sandbox after gateway start can
-#    hit a cold-start timeout while the policy engine initializes.
+# 2. Apply the custom policy
 POLICY_APPLIED=false
 for attempt in 1 2 3; do
     if openshell policy set "$SANDBOX_NAME" --policy "$POLICY_PATH" --wait 2>&1; then
@@ -116,7 +130,7 @@ openshell sandbox ssh-config "$SANDBOX_NAME" > "$SSH_CONFIG"
 SANDBOX_MCP_CONFIG="/tmp/mcp_config.json"
 scp -F "$SSH_CONFIG" "$MCP_CONFIG_PATH" "openshell-${SANDBOX_NAME}:${SANDBOX_MCP_CONFIG}"
 
-# 5. Copy claude binary into the sandbox (sandbox user can't write to /usr/local/bin)
+# 5. Copy claude binary into the sandbox
 CLAUDE_BIN=$(command -v claude 2>/dev/null || true)
 if [[ -z "$CLAUDE_BIN" ]]; then
     echo "Error: claude CLI not found in PATH" >&2
@@ -127,17 +141,14 @@ scp -F "$SSH_CONFIG" "$CLAUDE_BIN" "openshell-${SANDBOX_NAME}:${WORKSPACE}/bin/c
 ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" "chmod +x ${WORKSPACE}/bin/claude"
 
 # 6. Set up agent workspace with .claude/ directory structure
-#    The claude --agent CLI looks for agents in .claude/agents/ relative to cwd.
 ssh -F "$SSH_CONFIG" "openshell-${SANDBOX_NAME}" \
     "mkdir -p ${WORKSPACE}/.claude/agents ${WORKSPACE}/.claude/skills"
 
-# Copy all agent definitions
 if [[ -d "${BASE_DIR}/.claude/agents" ]]; then
     scp -F "$SSH_CONFIG" -r "${BASE_DIR}/.claude/agents" \
         "openshell-${SANDBOX_NAME}:${WORKSPACE}/.claude/"
 fi
 
-# Copy all skills
 if [[ -d "${BASE_DIR}/.claude/skills" ]]; then
     for skill_dir in "${BASE_DIR}/.claude/skills"/*/; do
         if [[ -d "$skill_dir" ]]; then

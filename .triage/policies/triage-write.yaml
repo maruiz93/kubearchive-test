@@ -52,14 +52,15 @@ network_policies:
         access: allow
     binaries:
       - path: "**"
-  openshell_gateway:
-    name: openshell-gateway
+  subagent_executor:
+    name: subagent-executor
     endpoints:
-      # Gateway API for sandbox lifecycle and SSH proxy.
-      # SSH to sub-sandboxes goes through `openshell ssh-proxy`
-      # which tunnels via the gateway — no direct port access needed.
+      # Executor HTTP service on the host handles sandbox lifecycle
+      # for subagents. The triage agent delegates via HTTP instead of
+      # creating sandboxes directly (gateway auth not available from
+      # inside a sandbox).
       - host: host.docker.internal
-        port: 8080
+        port: 8082
         protocol: tcp
         enforcement: enforce
         access: allow

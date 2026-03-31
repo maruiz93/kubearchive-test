@@ -5,26 +5,32 @@ Launcher for the scoped-tools agent experiment.
 This script:
 1. Gets a GitHub token (from --token flag, gh CLI, or GitHub App auth)
 2. Starts the MCP server with the token (agent never sees it)
-3. Creates an OpenShell sandbox for the triage agent
-4. Bootstraps the sandbox (copies binaries, agent files, configs)
+3. Starts a subagent executor HTTP server on the host
+4. Creates an OpenShell sandbox for the triage agent
 5. Launches the triage agent inside the sandbox
 
-The top-level agent decides which subagents to invoke and in what order.
-Subagents only have read tools. The top-level agent handles all writes.
+The subagent executor handles sandbox lifecycle for subagents on the host,
+where OpenShell gateway auth is available. The triage agent calls it via
+HTTP from inside its own sandbox, so every agent runs sandboxed without
+requiring nested sandbox creation.
 """
 
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.request
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 
 MCP_PORT = 8081
+EXECUTOR_PORT = 8082
 SANDBOX_WORKSPACE = "/tmp/workspace"
 
 
@@ -107,6 +113,9 @@ def start_mcp_server(token: str, repo: str, working_dir: Path) -> subprocess.Pop
     sys.exit(1)
 
 
+# --- OpenShell sandbox helpers ---
+
+
 def create_sandbox(name: str) -> None:
     """Create a persistent OpenShell sandbox."""
     result = subprocess.run(
@@ -116,16 +125,13 @@ def create_sandbox(name: str) -> None:
         stderr=subprocess.PIPE,
         timeout=35,
     )
-    # timeout exits 124 — sandbox create may exit non-zero after the
-    # interactive shell is killed. Check if the sandbox actually exists.
     if result.returncode not in (0, 124):
         check = subprocess.run(
             ["openshell", "sandbox", "get", name],
             capture_output=True, timeout=10,
         )
         if check.returncode != 0:
-            print(f"Error: sandbox create failed:\n{result.stderr.decode()}", file=sys.stderr)
-            sys.exit(1)
+            raise RuntimeError(f"Sandbox create failed: {result.stderr.decode()}")
 
 
 def apply_policy(sandbox_name: str, policy_path: str) -> None:
@@ -140,35 +146,32 @@ def apply_policy(sandbox_name: str, policy_path: str) -> None:
             return
         print(f"  Policy attempt {attempt} failed, retrying in 3s...", file=sys.stderr)
         time.sleep(3)
-
-    print("Error: policy set failed after 3 attempts", file=sys.stderr)
-    sys.exit(1)
+    raise RuntimeError("Policy set failed after 3 attempts")
 
 
-def get_ssh_config(sandbox_name: str, ssh_config_path: str) -> None:
-    """Get SSH config for a sandbox and write to file."""
+def get_ssh_config(sandbox_name: str) -> str:
+    """Get SSH config for a sandbox, return as string."""
     result = subprocess.run(
         ["openshell", "sandbox", "ssh-config", sandbox_name],
         capture_output=True, text=True, timeout=10, check=True,
     )
-    with open(ssh_config_path, "w") as f:
-        f.write(result.stdout)
+    return result.stdout
 
 
-def sandbox_scp(ssh_config: str, sandbox_name: str, local: str, remote: str) -> None:
+def sandbox_scp(ssh_config_path: str, sandbox_name: str, local: str, remote: str) -> None:
     """Copy a file or directory into a sandbox."""
     subprocess.run(
-        ["scp", "-F", ssh_config, "-r", str(local),
+        ["scp", "-F", ssh_config_path, "-r", str(local),
          f"openshell-{sandbox_name}:{remote}"],
         check=True, timeout=60,
     )
 
 
-def sandbox_ssh(ssh_config: str, sandbox_name: str, cmd: str) -> None:
+def sandbox_ssh(ssh_config_path: str, sandbox_name: str, cmd: str, timeout: int = 30) -> subprocess.CompletedProcess:
     """Run a command inside a sandbox."""
-    subprocess.run(
-        ["ssh", "-F", ssh_config, f"openshell-{sandbox_name}", cmd],
-        check=True, timeout=30,
+    return subprocess.run(
+        ["ssh", "-F", ssh_config_path, f"openshell-{sandbox_name}", cmd],
+        capture_output=True, text=True, timeout=timeout,
     )
 
 
@@ -190,40 +193,242 @@ def render_policy(template_path: Path, owner: str, repo_name: str, issue_number:
     return tmp.name
 
 
-def bootstrap_sandbox(
-    ssh_config: str,
+def delete_sandbox(name: str) -> None:
+    """Delete a sandbox, ignoring errors."""
+    subprocess.run(
+        ["openshell", "sandbox", "delete", name],
+        capture_output=True, timeout=10,
+    )
+
+
+def discover_agents(working_dir: Path) -> dict[str, str | None]:
+    """Read agent definitions and return {name: policy_relative_path}."""
+    agents = {}
+    for agent_file in (working_dir / "agents").glob("*.md"):
+        name = agent_file.stem
+        with open(agent_file) as f:
+            content = f.read()
+        match = re.search(r'^sandbox:\s*(.+)$', content, re.MULTILINE)
+        policy = match.group(1).strip() if match else None
+        agents[name] = policy
+    return agents
+
+
+def bootstrap_agent_sandbox(
+    ssh_config_path: str,
     sandbox_name: str,
     working_dir: Path,
     mcp_config_path: str,
 ) -> None:
-    """Copy all required files and binaries into the triage sandbox."""
-    scp = lambda local, remote: sandbox_scp(ssh_config, sandbox_name, local, remote)
-    ssh = lambda cmd: sandbox_ssh(ssh_config, sandbox_name, cmd)
+    """Copy claude binary, agent files, skills, and MCP config into a sandbox."""
+    scp = lambda local, remote: sandbox_scp(ssh_config_path, sandbox_name, local, remote)
+    ssh = lambda cmd: sandbox_ssh(ssh_config_path, sandbox_name, cmd)
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        raise RuntimeError("claude binary not found in PATH")
+
+    # Create workspace structure
+    ssh(f"mkdir -p {SANDBOX_WORKSPACE}/.claude/agents "
+        f"{SANDBOX_WORKSPACE}/.claude/skills "
+        f"{SANDBOX_WORKSPACE}/bin")
+
+    # Copy claude binary
+    scp(claude_bin, f"{SANDBOX_WORKSPACE}/bin/claude")
+    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/claude")
+
+    # Copy agent definitions
+    for agent_file in (working_dir / "agents").glob("*.md"):
+        scp(str(agent_file), f"{SANDBOX_WORKSPACE}/.claude/agents/")
+
+    # Copy skills
+    for skill_dir in (working_dir / "skills").iterdir():
+        if skill_dir.is_dir():
+            scp(str(skill_dir), f"{SANDBOX_WORKSPACE}/.claude/skills/")
+
+    # Copy MCP config
+    scp(mcp_config_path, f"{SANDBOX_WORKSPACE}/mcp_config.json")
+
+
+# --- Subagent executor ---
+
+
+class SubagentExecutor:
+    """
+    Runs subagents in sandboxed environments on the host.
+
+    The triage agent (inside its own sandbox) calls this executor via HTTP.
+    The executor creates a sandbox for the requested subagent, runs it,
+    and returns the output. This avoids nested sandbox creation issues
+    (gateway auth not available from inside a sandbox).
+    """
+
+    def __init__(self, working_dir: Path, mcp_config_path: str,
+                 owner: str, repo_name: str, issue_number: int):
+        self.working_dir = working_dir
+        self.mcp_config_path = mcp_config_path
+        self.owner = owner
+        self.repo_name = repo_name
+        self.issue_number = issue_number
+        self.agents = discover_agents(working_dir)
+
+    def run_agent(self, agent_name: str, prompt: str) -> tuple[int, str]:
+        """Run an agent in a fresh sandbox. Returns (exit_code, output)."""
+        if agent_name not in self.agents:
+            return 1, f"Unknown agent: {agent_name}"
+        if agent_name == "triage":
+            return 1, "Cannot run triage agent as a subagent"
+
+        policy_rel = self.agents[agent_name]
+        if not policy_rel:
+            return 1, f"No sandbox policy defined for agent '{agent_name}'"
+
+        policy_template = self.working_dir / policy_rel
+        if not policy_template.exists():
+            return 1, f"Policy template not found: {policy_template}"
+
+        sandbox_name = f"sub-{agent_name}-{os.getpid()}-{int(time.time())}"
+        ssh_config_path = f"/tmp/openshell-ssh-{sandbox_name}.config"
+        policy_path = None
+
+        try:
+            # 1. Render policy
+            policy_path = render_policy(
+                policy_template, self.owner, self.repo_name, self.issue_number,
+            )
+
+            # 2. Create sandbox
+            print(f"[executor] Creating sandbox for '{agent_name}'...", file=sys.stderr)
+            create_sandbox(sandbox_name)
+
+            # 3. Apply policy
+            print(f"[executor] Applying policy for '{agent_name}'...", file=sys.stderr)
+            apply_policy(sandbox_name, policy_path)
+
+            # 4. Get SSH config
+            ssh_config = get_ssh_config(sandbox_name)
+            with open(ssh_config_path, "w") as f:
+                f.write(ssh_config)
+
+            # 5. Bootstrap sandbox
+            print(f"[executor] Bootstrapping '{agent_name}'...", file=sys.stderr)
+            bootstrap_agent_sandbox(
+                ssh_config_path, sandbox_name,
+                self.working_dir, self.mcp_config_path,
+            )
+
+            # 6. Run agent
+            print(f"[executor] Running '{agent_name}'...", file=sys.stderr)
+            mcp_config = f"{SANDBOX_WORKSPACE}/mcp_config.json"
+            result = subprocess.run(
+                ["ssh", "-F", ssh_config_path, f"openshell-{sandbox_name}",
+                 f"cd {SANDBOX_WORKSPACE} && "
+                 f"export PATH={SANDBOX_WORKSPACE}/bin:$PATH && "
+                 f"claude --print --agent '{agent_name}' "
+                 f"--mcp-config '{mcp_config}' "
+                 f"--strict-mcp-config --dangerously-skip-permissions "
+                 f"'{prompt}'"],
+                capture_output=True, text=True, timeout=300,
+            )
+            print(f"[executor] '{agent_name}' exited with code {result.returncode}", file=sys.stderr)
+            return result.returncode, result.stdout
+
+        except Exception as e:
+            return 1, f"Error running '{agent_name}': {e}"
+        finally:
+            delete_sandbox(sandbox_name)
+            if policy_path and os.path.exists(policy_path):
+                os.unlink(policy_path)
+            if os.path.exists(ssh_config_path):
+                os.unlink(ssh_config_path)
+
+
+def make_executor_handler(executor: SubagentExecutor) -> type:
+    """Create an HTTP handler for the subagent executor."""
+
+    class ExecutorHandler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            # URL format: /run/<agent-name>
+            path_match = re.match(r'^/run/([a-zA-Z0-9_-]+)$', self.path)
+            if not path_match:
+                self.send_error(404, "Use POST /run/<agent-name>")
+                return
+
+            agent_name = path_match.group(1)
+            content_length = int(self.headers.get("Content-Length", 0))
+            prompt = self.rfile.read(content_length).decode("utf-8")
+
+            if not prompt:
+                self.send_error(400, "Prompt is required in request body")
+                return
+
+            exit_code, output = executor.run_agent(agent_name, prompt)
+
+            response = json.dumps({
+                "exit_code": exit_code,
+                "output": output,
+            }).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            self.wfile.write(response)
+
+        def log_message(self, format, *args):
+            print(f"[executor] {args[0]}", file=sys.stderr)
+
+    return ExecutorHandler
+
+
+def start_executor(executor: SubagentExecutor) -> HTTPServer:
+    """Start the subagent executor HTTP server in a background thread."""
+    handler = make_executor_handler(executor)
+    server = HTTPServer(("0.0.0.0", EXECUTOR_PORT), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"[executor] Listening on http://0.0.0.0:{EXECUTOR_PORT}/", file=sys.stderr)
+    return server
+
+
+# --- Triage sandbox bootstrap ---
+
+
+def bootstrap_triage_sandbox(
+    ssh_config_path: str,
+    sandbox_name: str,
+    working_dir: Path,
+    mcp_config_path: str,
+) -> None:
+    """Bootstrap the triage sandbox with everything it needs."""
+    scp = lambda local, remote: sandbox_scp(ssh_config_path, sandbox_name, local, remote)
+    ssh = lambda cmd: sandbox_ssh(ssh_config_path, sandbox_name, cmd)
+
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        raise RuntimeError("claude binary not found in PATH")
 
     # Create workspace structure
     ssh(f"mkdir -p {SANDBOX_WORKSPACE}/.claude/agents "
         f"{SANDBOX_WORKSPACE}/.claude/skills "
         f"{SANDBOX_WORKSPACE}/agents "
-        f"{SANDBOX_WORKSPACE}/policies "
-        f"{SANDBOX_WORKSPACE}/tools/scripts")
+        f"{SANDBOX_WORKSPACE}/tools/scripts "
+        f"{SANDBOX_WORKSPACE}/bin")
 
-    # Copy agent definitions
-    # - agents/ for run-sandboxed.sh (reads frontmatter)
-    # - .claude/agents/ for claude --agent CLI
+    # Copy claude binary
+    scp(claude_bin, f"{SANDBOX_WORKSPACE}/bin/claude")
+    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/claude")
+
+    # Copy agent definitions (agents/ for run-sandboxed.sh, .claude/agents/ for claude CLI)
     for agent_file in (working_dir / "agents").glob("*.md"):
         scp(str(agent_file), f"{SANDBOX_WORKSPACE}/agents/")
         scp(str(agent_file), f"{SANDBOX_WORKSPACE}/.claude/agents/")
 
-    # Copy skills for claude --agent CLI
+    # Copy skills
     for skill_dir in (working_dir / "skills").iterdir():
         if skill_dir.is_dir():
             scp(str(skill_dir), f"{SANDBOX_WORKSPACE}/.claude/skills/")
 
-    # Copy policy templates (subagents need these)
-    for policy_file in (working_dir / "policies").glob("*.yaml"):
-        scp(str(policy_file), f"{SANDBOX_WORKSPACE}/policies/")
-
-    # Copy run-sandboxed.sh
+    # Copy run-sandboxed.sh (triage agent calls this for subagents)
     scp(str(working_dir / "tools" / "scripts" / "run-sandboxed.sh"),
         f"{SANDBOX_WORKSPACE}/tools/scripts/")
     ssh(f"chmod +x {SANDBOX_WORKSPACE}/tools/scripts/run-sandboxed.sh")
@@ -231,25 +436,8 @@ def bootstrap_sandbox(
     # Copy MCP config
     scp(mcp_config_path, f"{SANDBOX_WORKSPACE}/mcp_config.json")
 
-    # Copy binaries to a writable location (sandbox user can't write to /usr/local/bin)
-    openshell_bin = shutil.which("openshell")
-    claude_bin = shutil.which("claude")
-    if not openshell_bin:
-        print("Error: openshell binary not found in PATH", file=sys.stderr)
-        sys.exit(1)
-    if not claude_bin:
-        print("Error: claude binary not found in PATH", file=sys.stderr)
-        sys.exit(1)
 
-    ssh(f"mkdir -p {SANDBOX_WORKSPACE}/bin")
-    scp(openshell_bin, f"{SANDBOX_WORKSPACE}/bin/openshell")
-    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/openshell")
-    scp(claude_bin, f"{SANDBOX_WORKSPACE}/bin/claude")
-    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/claude")
-
-    # Configure openshell gateway inside sandbox to reach host gateway
-    ssh(f"PATH={SANDBOX_WORKSPACE}/bin:$PATH "
-        f"openshell gateway add http://host.docker.internal:8080")
+# --- Main launch ---
 
 
 def launch_agent(
@@ -295,6 +483,13 @@ def launch_agent(
     json.dump(mcp_config, mcp_config_file)
     mcp_config_file.close()
 
+    # 2. Start subagent executor
+    executor = SubagentExecutor(
+        working_dir, mcp_config_file.name,
+        owner, repo_name, issue_number,
+    )
+    executor_server = start_executor(executor)
+
     # Render triage policy template
     policy_path = render_policy(
         working_dir / "policies" / "triage-write.yaml",
@@ -304,16 +499,15 @@ def launch_agent(
     # --- Log setup ---
     print(f"Triage: {repo}#{issue_number}")
     print(f"  MCP server:  http://host.docker.internal:{MCP_PORT}/ (pid {mcp_process.pid})")
+    print(f"  Executor:    http://host.docker.internal:{EXECUTOR_PORT}/")
     print(f"  Sandbox:     {sandbox_name}")
     print(f"  Policy:      policies/triage-write.yaml")
     print("---")
     sys.stdout.flush()
 
     def cleanup():
-        subprocess.run(
-            ["openshell", "sandbox", "delete", sandbox_name],
-            capture_output=True, timeout=10,
-        )
+        executor_server.shutdown()
+        delete_sandbox(sandbox_name)
         for path in (mcp_config_file.name, policy_path, ssh_config_path):
             if os.path.exists(path):
                 os.unlink(path)
@@ -321,24 +515,26 @@ def launch_agent(
         mcp_process.wait(timeout=5)
 
     try:
-        # 2. Create triage sandbox
+        # 3. Create triage sandbox
         print("Creating triage sandbox...")
         create_sandbox(sandbox_name)
 
-        # 3. Apply triage policy
+        # 4. Apply triage policy
         print("Applying triage policy...")
         apply_policy(sandbox_name, policy_path)
 
-        # 4. Get SSH config
-        get_ssh_config(sandbox_name, ssh_config_path)
+        # 5. Get SSH config
+        ssh_config = get_ssh_config(sandbox_name)
+        with open(ssh_config_path, "w") as f:
+            f.write(ssh_config)
 
-        # 5. Bootstrap sandbox with all required files
+        # 6. Bootstrap sandbox
         print("Bootstrapping triage sandbox...")
-        bootstrap_sandbox(
+        bootstrap_triage_sandbox(
             ssh_config_path, sandbox_name, working_dir, mcp_config_file.name,
         )
 
-        # 6. Run triage agent inside sandbox
+        # 7. Run triage agent inside sandbox
         print(f"Running: {prompt}")
         sys.stdout.flush()
 
@@ -347,6 +543,7 @@ def launch_agent(
             f"export REPO='{repo}' && "
             f"export ISSUE_NUMBER='{issue_number}' && "
             f"export MCP_CONFIG_PATH='{sandbox_mcp_config}' && "
+            f"export SANDBOX_EXECUTOR_URL='http://host.docker.internal:{EXECUTOR_PORT}' && "
         )
         process = subprocess.Popen(
             ["ssh", "-F", ssh_config_path, f"openshell-{sandbox_name}",
