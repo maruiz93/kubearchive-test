@@ -4,7 +4,7 @@ version: 1
 # Read-only GitHub API + HTTPS GET to any host (fetch external links).
 #
 # Placeholders {{OWNER}}, {{REPO_NAME}}, and {{ISSUE_NUMBER}} are substituted
-# at runtime by run-sandboxed.sh using REPO and ISSUE_NUMBER env vars.
+# at runtime by the launcher using REPO and ISSUE_NUMBER env vars.
 
 filesystem_policy:
   include_workdir: true

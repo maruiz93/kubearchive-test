@@ -5,23 +5,31 @@ import subprocess
 import sys
 import time
 
-from . import SANDBOX_CREDS_PATH, SANDBOX_WORKSPACE
+from . import SANDBOX_CREDS_PATH
 from .sandbox import sandbox_scp
 
 
 def get_token_from_gh_cli() -> str:
     """Get token from gh CLI auth."""
     result = subprocess.run(
-        ["gh", "auth", "token"],
-        capture_output=True, text=True, timeout=10,
+        ["gh", "auth", "token"],  # nosec B607
+        capture_output=True,
+        text=True,
+        timeout=10,
     )
     if result.returncode != 0:
-        print("Error: could not get token from gh CLI. Use --token or authenticate with `gh auth login`.", file=sys.stderr)
+        print(
+            "Error: could not get token from gh CLI. "
+            "Use --token or authenticate with `gh auth login`.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     return result.stdout.strip()
 
 
-def get_token_from_github_app(pem_path: str, client_id: str, installation_id: int, repo_id: int | None = None) -> str:
+def get_token_from_github_app(
+    pem_path: str, client_id: str, installation_id: int, repo_id: int | None = None
+) -> str:
     """Get token via GitHub App authentication."""
     import jwt
     import requests
@@ -61,8 +69,7 @@ def get_token_from_github_app(pem_path: str, client_id: str, installation_id: in
 def get_vertex_env() -> dict[str, str]:
     """Collect Vertex AI environment variables from the host, if present."""
     vertex_vars = {}
-    for key in ("CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID",
-                "CLOUD_ML_REGION"):
+    for key in ("CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"):
         val = os.environ.get(key)
         if val:
             vertex_vars[key] = val
@@ -78,10 +85,13 @@ def get_vertex_creds_path() -> str | None:
 
 
 def bootstrap_vertex_creds(
-    ssh_config_path: str, sandbox_name: str,
+    ssh_config_path: str,
+    sandbox_name: str,
 ) -> str:
     """Copy GCP credentials into the sandbox. Returns export commands."""
-    scp = lambda local, remote: sandbox_scp(ssh_config_path, sandbox_name, local, remote)
+
+    def scp(local, remote):
+        sandbox_scp(ssh_config_path, sandbox_name, local, remote)
 
     vertex_env = get_vertex_env()
     creds_path = get_vertex_creds_path()

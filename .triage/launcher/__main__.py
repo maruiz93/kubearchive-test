@@ -38,7 +38,10 @@ def main() -> None:
             parser.error("--pem requires --client-id and --installation-id")
         print("Authenticating as GitHub App...")
         token = get_token_from_github_app(
-            args.pem, args.client_id, args.installation_id, args.repo_id,
+            args.pem,
+            args.client_id,
+            args.installation_id,
+            args.repo_id,
         )
     else:
         print("Getting token from gh CLI...")

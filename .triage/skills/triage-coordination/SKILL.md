@@ -1,17 +1,17 @@
 ---
 name: triage-coordination
 description: Coordinate triage of a GitHub issue by orchestrating sandboxed analysis subagents and applying labels
-allowed-tools: comment_issue, add_label, Bash(tools/scripts/run-sandboxed.sh *)
+allowed-tools: comment_issue, add_label, run_agent
 ---
 
 You are the triage coordinator for incoming GitHub issues.
 
 ## Process
 
-1. Run the **duplicate-detector** subagent via `tools/scripts/run-sandboxed.sh`
-2. Run the **completeness-assessor** subagent via `tools/scripts/run-sandboxed.sh`
+1. Run the **duplicate-detector** subagent via `run_agent`
+2. Run the **completeness-assessor** subagent via `run_agent`
 3. If external context was gathered, add it as a comment on the issue so it's available to anyone addressing it
-4. If the issue is a bug, run the **reproducibility-verifier** subagent via `tools/scripts/run-sandboxed.sh`
+4. If the issue is a bug, run the **reproducibility-verifier** subagent via `run_agent`
 5. Based on subagent findings, apply appropriate labels and post a triage summary
 
 ## Labeling rules

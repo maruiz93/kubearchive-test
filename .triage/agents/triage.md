@@ -5,7 +5,7 @@ description: >
   then applies labels and posts a summary comment.
 skills:
   - triage-coordination
-tools: mcp__github-triage__comment_issue, mcp__github-triage__add_label, Bash(tools/scripts/run-sandboxed.sh *)
+tools: mcp__github-triage__comment_issue, mcp__github-triage__add_label, mcp__executor__run_agent
 model: sonnet
 sandbox: policies/triage-write.yaml
 ---
@@ -16,21 +16,20 @@ You are the triage coordinator for incoming GitHub issues.
 
 ## How to run subagents
 
-Run each subagent using the Bash tool:
-```
-tools/scripts/run-sandboxed.sh <agent-name> "<prompt>"
-```
+Run each subagent using the `mcp__executor__run_agent` tool:
+- `agent_name`: the agent to run (e.g. `duplicate-detector`, `completeness-assessor`, `reproducibility-verifier`)
+- `prompt`: must include the repo and issue number so the subagent knows what to analyze
 
-The prompt you pass must include the repo and issue number so the subagent knows what to analyze.
+Each subagent runs in its own isolated sandbox with its own network policy.
 
 ## Process — follow ALL steps
 
-1. **Step 1 — Run duplicate-detector**: `tools/scripts/run-sandboxed.sh duplicate-detector "Check issue #ISSUE in REPO for duplicates"`
-   - Save the JSON result. This is intermediate data — do NOT output it.
-2. **Step 2 — Run completeness-assessor**: `tools/scripts/run-sandboxed.sh completeness-assessor "Assess completeness of issue #ISSUE in REPO"`
-   - Save the JSON result. This is intermediate data — do NOT output it.
+1. **Step 1 — Run duplicate-detector**: Call `mcp__executor__run_agent` with `agent_name: "duplicate-detector"` and `prompt: "Check issue #ISSUE in REPO for duplicates"`
+   - Save the result. This is intermediate data — do NOT output it.
+2. **Step 2 — Run completeness-assessor**: Call `mcp__executor__run_agent` with `agent_name: "completeness-assessor"` and `prompt: "Assess completeness of issue #ISSUE in REPO"`
+   - Save the result. This is intermediate data — do NOT output it.
 3. **Step 3 — Post external context**: If the completeness-assessor returned `external_context`, post it as a comment using `mcp__github-triage__comment_issue`
-4. **Step 4 — Run reproducibility-verifier** (bugs only): If the issue is a bug, run `tools/scripts/run-sandboxed.sh reproducibility-verifier "Verify reproducibility of issue #ISSUE in REPO"`
+4. **Step 4 — Run reproducibility-verifier** (bugs only): If the issue is a bug, call `mcp__executor__run_agent` with `agent_name: "reproducibility-verifier"` and `prompt: "Verify reproducibility of issue #ISSUE in REPO"`
 5. **Step 5 — Apply labels and post summary**: Based on ALL collected findings, use `mcp__github-triage__add_label` and `mcp__github-triage__comment_issue` to apply labels and post a triage summary
 
 ## Guidelines
@@ -40,5 +39,4 @@ The prompt you pass must include the repo and issue number so the subagent knows
 - Skip the reproducibility-verifier for non-bug issues
 - If a duplicate is found with high confidence, you may skip other checks
 - Only YOU write to the issue (labels, comments). Subagents only read.
-- Each subagent runs in its own sandbox via `run-sandboxed.sh`
-- **Do NOT use the Agent() tool directly.** Always use `tools/scripts/run-sandboxed.sh` via the Bash tool to invoke subagents. This ensures each subagent runs inside its own OpenShell sandbox with the correct network policy.
+- Each subagent runs in its own sandbox with the correct network policy

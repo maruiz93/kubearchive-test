@@ -5,7 +5,7 @@ version: 1
 # No write access, no external web, no local filesystem beyond sandbox.
 #
 # Placeholders {{OWNER}} and {{REPO_NAME}} are substituted at runtime
-# by run-sandboxed.sh using REPO env var (set by launcher.py).
+# by the launcher using REPO env var (set by launcher.py).
 
 filesystem_policy:
   include_workdir: true

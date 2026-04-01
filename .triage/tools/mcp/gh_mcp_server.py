@@ -21,15 +21,14 @@ import os
 import re
 import subprocess
 import sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Any
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 
 def gh(args: list[str], token: str) -> subprocess.CompletedProcess:
     """Run a gh CLI command with the given token."""
     env = {**os.environ, "GH_TOKEN": token}
     return subprocess.run(
-        ["gh", *args],
+        ["gh", *args],  # nosec B607
         env=env,
         capture_output=True,
         text=True,
@@ -49,8 +48,7 @@ def read_issue(params: dict, token: str, allowed_repo: str) -> dict:
         return {"error": f"Access denied: can only read issues in {allowed_repo}"}
 
     result = gh(
-        ["issue", "view", str(issue_number), "--repo", repo,
-         "--json", "title,body,labels,author"],
+        ["issue", "view", str(issue_number), "--repo", repo, "--json", "title,body,labels,author"],
         token,
     )
 
@@ -74,8 +72,7 @@ def list_issues(params: dict, token: str, allowed_repo: str) -> dict:
     if repo != allowed_repo:
         return {"error": f"Access denied: can only list issues in {allowed_repo}"}
 
-    args = ["issue", "list", "--repo", repo,
-            "--json", "number,title,labels,state", "--limit", "20"]
+    args = ["issue", "list", "--repo", repo, "--json", "number,title,labels,state", "--limit", "20"]
     if query:
         args.extend(["--search", query])
 
@@ -192,7 +189,10 @@ TOOLS = {
         "handler": list_issues,
     },
     "comment_issue": {
-        "description": "Add a comment to an issue. Body is validated for credentials and truncated at 4096 chars.",
+        "description": (
+            "Add a comment to an issue. "
+            "Body is validated for credentials and truncated at 4096 chars."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -264,11 +264,13 @@ def handle_request(request: dict, token: str, allowed_repo: str) -> dict:
     if method == "tools/list":
         tools_list = []
         for name, tool in TOOLS.items():
-            tools_list.append({
-                "name": name,
-                "description": tool["description"],
-                "inputSchema": tool["inputSchema"],
-            })
+            tools_list.append(
+                {
+                    "name": name,
+                    "description": tool["description"],
+                    "inputSchema": tool["inputSchema"],
+                }
+            )
         return {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -364,7 +366,7 @@ def run_stdio(token: str, allowed_repo: str) -> None:
 def run_http(token: str, allowed_repo: str, port: int) -> None:
     """Run MCP server over HTTP (streamable-http transport)."""
     handler = make_http_handler(token, allowed_repo)
-    server = HTTPServer(("0.0.0.0", port), handler)
+    server = HTTPServer(("0.0.0.0", port), handler)  # nosec B104
     print(f"MCP server listening on http://0.0.0.0:{port}/", file=sys.stderr)
     sys.stderr.flush()
     server.serve_forever()
