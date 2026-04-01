@@ -66,17 +66,3 @@ network_policies:
         access: allow
     binaries:
       - path: "**"
-  mcp_server:
-    name: mcp-server
-    endpoints:
-      - host: host.docker.internal
-        port: 8081
-        protocol: rest
-        enforcement: enforce
-        access: full
-        allowed_ips:
-          - "10.0.0.0/8"
-          - "172.16.0.0/12"
-          - "192.168.0.0/16"
-    binaries:
-      - path: "**"

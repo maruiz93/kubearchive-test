@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-MCP server that exposes scoped GitHub tools for the triage agent.
+MCP server that exposes write-only GitHub tools for the triage agent.
 
 The server holds the GitHub token internally — the agent never sees it.
+Read operations are handled directly by subagents via `gh` CLI with
+L7 network policy enforcement. Only write operations (comment, label)
+go through this server.
+
 Each tool enforces its own constraints (input validation, credential
 scanning, output sanitization) before making any API call.
 
@@ -37,51 +41,6 @@ def gh(args: list[str], token: str) -> subprocess.CompletedProcess:
 
 
 # --- Tool implementations ---
-
-
-def read_issue(params: dict, token: str, allowed_repo: str) -> dict:
-    """Read an issue's title, body, labels, and author."""
-    repo = params.get("repo", "")
-    issue_number = params.get("issue_number")
-
-    if repo != allowed_repo:
-        return {"error": f"Access denied: can only read issues in {allowed_repo}"}
-
-    result = gh(
-        ["issue", "view", str(issue_number), "--repo", repo, "--json", "title,body,labels,author"],
-        token,
-    )
-
-    if result.returncode != 0:
-        return {"error": result.stderr.strip()}
-
-    data = json.loads(result.stdout)
-
-    # Sanitize: strip HTML comments from body
-    if "body" in data and data["body"]:
-        data["body"] = re.sub(r"<!--.*?-->", "", data["body"], flags=re.DOTALL)
-
-    return data
-
-
-def list_issues(params: dict, token: str, allowed_repo: str) -> dict:
-    """Search issues in the repository."""
-    repo = params.get("repo", "")
-    query = params.get("query", "")
-
-    if repo != allowed_repo:
-        return {"error": f"Access denied: can only list issues in {allowed_repo}"}
-
-    args = ["issue", "list", "--repo", repo, "--json", "number,title,labels,state", "--limit", "20"]
-    if query:
-        args.extend(["--search", query])
-
-    result = gh(args, token)
-
-    if result.returncode != 0:
-        return {"error": result.stderr.strip()}
-
-    return json.loads(result.stdout)
 
 
 def comment_issue(params: dict, token: str, allowed_repo: str) -> dict:
@@ -152,42 +111,6 @@ def add_label(params: dict, token: str, allowed_repo: str) -> dict:
 # --- MCP protocol ---
 
 TOOLS = {
-    "read_issue": {
-        "description": "Read the title, body, labels, and author of a single issue",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "issue_number": {
-                    "type": "integer",
-                    "description": "Issue number",
-                },
-                "repo": {
-                    "type": "string",
-                    "description": "Repository in org/repo format",
-                },
-            },
-            "required": ["issue_number", "repo"],
-        },
-        "handler": read_issue,
-    },
-    "list_issues": {
-        "description": "Search issues in the repository, useful for duplicate detection",
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "repo": {
-                    "type": "string",
-                    "description": "Repository in org/repo format",
-                },
-                "query": {
-                    "type": "string",
-                    "description": "Search terms to filter issues",
-                },
-            },
-            "required": ["repo"],
-        },
-        "handler": list_issues,
-    },
     "comment_issue": {
         "description": (
             "Add a comment to an issue. "

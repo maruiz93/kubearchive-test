@@ -48,19 +48,3 @@ network_policies:
         access: allow
     binaries:
       - path: "**"
-  mcp_server:
-    name: mcp-server
-    endpoints:
-      # GitHub MCP server runs on the host. allowed_ips bypasses the default
-      # SSRF guard that blocks private IPs (RFC 1918).
-      - host: host.docker.internal
-        port: 8081
-        protocol: rest
-        enforcement: enforce
-        access: full
-        allowed_ips:
-          - "10.0.0.0/8"
-          - "172.16.0.0/12"
-          - "192.168.0.0/16"
-    binaries:
-      - path: "**"

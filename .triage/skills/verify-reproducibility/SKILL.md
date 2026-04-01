@@ -1,7 +1,7 @@
 ---
 name: verify-reproducibility
 description: Verify whether a reported bug is reproducible by inspecting the codebase
-allowed-tools: read_issue, Bash(grep *), Bash(find *), Bash(cat *)
+allowed-tools: Bash(gh issue view *), Bash(grep *), Bash(find *), Bash(cat *)
 ---
 
 If the issue is a bug report with reproduction steps:

@@ -1,7 +1,7 @@
 ---
 name: assess-completeness
 description: Check if an issue has all required information for action
-allowed-tools: read_issue, WebFetch
+allowed-tools: Bash(gh issue view *), WebFetch
 ---
 
 Evaluate whether the issue contains sufficient information.

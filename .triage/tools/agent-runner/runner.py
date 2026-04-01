@@ -98,6 +98,10 @@ def _bootstrap_sandbox(
     if not claude_bin:
         raise RuntimeError("claude binary not found in PATH")
 
+    gh_bin = shutil.which("gh")
+    if not gh_bin:
+        raise RuntimeError("gh CLI not found in PATH")
+
     # Create workspace structure
     ssh(
         f"mkdir -p {SANDBOX_WORKSPACE}/.claude/agents "
@@ -105,9 +109,10 @@ def _bootstrap_sandbox(
         f"{SANDBOX_WORKSPACE}/bin"
     )
 
-    # Copy claude binary
+    # Copy claude and gh binaries
     scp(claude_bin, f"{SANDBOX_WORKSPACE}/bin/claude")
-    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/claude")
+    scp(gh_bin, f"{SANDBOX_WORKSPACE}/bin/gh")
+    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/claude {SANDBOX_WORKSPACE}/bin/gh")
 
     # Copy agent definitions
     for agent_file in (working_dir / "agents").glob("*.md"):
