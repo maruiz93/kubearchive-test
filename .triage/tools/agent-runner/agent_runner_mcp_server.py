@@ -22,6 +22,7 @@ import os
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from socketserver import ThreadingMixIn
 
 # Add this directory to sys.path so we can import runner and sandbox
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -246,8 +247,11 @@ def main() -> None:
         )
         sys.exit(1)
 
+    class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+
     handler = make_http_handler(runner)
-    server = HTTPServer(
+    server = ThreadingHTTPServer(
         ("0.0.0.0", args.port),
         handler,  # nosec B104
     )
