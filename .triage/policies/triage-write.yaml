@@ -29,7 +29,8 @@ network_policies:
         enforcement: enforce
         access: allow
     binaries:
-      - path: "**"
+      - path: "**/curl"
+      - path: "**/claude"
   gh_server:
     name: gh-server-readwrite
     endpoints:
@@ -57,11 +58,10 @@ network_policies:
               method: POST
               path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}/labels
         allowed_ips:
-          - "10.0.0.0/8"
-          - "172.16.0.0/12"
-          - "192.168.0.0/16"
+          - "{{HOST_IP}}/32"
     binaries:
-      - path: "**"
+      - path: "**/curl"
+      - path: "**/claude"
   agent_runner:
     name: agent-runner
     endpoints:
@@ -72,10 +72,15 @@ network_policies:
         port: 8082
         protocol: rest
         enforcement: enforce
-        access: full
+        rules:
+          - allow:
+              method: POST
+              path: /run-agent
+          - allow:
+              method: GET
+              path: /health
         allowed_ips:
-          - "10.0.0.0/8"
-          - "172.16.0.0/12"
-          - "192.168.0.0/16"
+          - "{{HOST_IP}}/32"
     binaries:
-      - path: "**"
+      - path: "**/curl"
+      - path: "**/claude"

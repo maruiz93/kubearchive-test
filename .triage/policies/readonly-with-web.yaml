@@ -31,11 +31,10 @@ network_policies:
               method: GET
               path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}
         allowed_ips:
-          - "10.0.0.0/8"
-          - "172.16.0.0/12"
-          - "192.168.0.0/16"
+          - "{{HOST_IP}}/32"
     binaries:
-      - path: "**"
+      - path: "**/curl"
+      - path: "**/claude"
   external_web:
     name: https-allow
     endpoints:
@@ -60,7 +59,8 @@ network_policies:
         enforcement: enforce
         access: allow
     binaries:
-      - path: "**"
+      - path: "**/curl"
+      - path: "**/claude"
   vertex_ai:
     name: vertex-ai
     endpoints:
@@ -70,4 +70,5 @@ network_policies:
         enforcement: enforce
         access: allow
     binaries:
-      - path: "**"
+      - path: "**/curl"
+      - path: "**/claude"

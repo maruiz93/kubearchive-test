@@ -161,6 +161,33 @@ def extract_transcripts(
             print(f"  [{agent_name}] Failed to copy transcript: {e}", file=sys.stderr)
 
 
+def _resolve_host_ip() -> str:
+    """Resolve host.docker.internal to a specific IP address."""
+    import socket
+
+    try:
+        return socket.gethostbyname("host.docker.internal")
+    except socket.gaierror as dns_err:
+        # Fallback: on Linux without Docker Desktop, the host IP
+        # is typically the docker bridge gateway.
+        try:
+            result = subprocess.run(
+                ["ip", "route", "show", "default"],  # nosec B607
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            # "default via 172.17.0.1 dev eth0" → 172.17.0.1
+            parts = result.stdout.strip().split()
+            if len(parts) >= 3 and parts[0] == "default":
+                return parts[2]
+        except Exception:
+            pass
+        raise RuntimeError(
+            "Cannot resolve host.docker.internal and no default gateway found"
+        ) from dns_err
+
+
 def render_policy(
     template_path: Path,
     owner: str,
@@ -170,10 +197,14 @@ def render_policy(
     """Render a policy template and return the temp file path."""
     with open(template_path) as f:
         content = f.read()
+
+    host_ip = _resolve_host_ip()
+
     content = (
         content.replace("{{OWNER}}", owner)
         .replace("{{REPO_NAME}}", repo_name)
         .replace("{{ISSUE_NUMBER}}", str(issue_number))
+        .replace("{{HOST_IP}}", host_ip)
     )
     with tempfile.NamedTemporaryFile(
         mode="w",

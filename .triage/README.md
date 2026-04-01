@@ -282,17 +282,17 @@ Tested on [maruiz93/kubearchive-test](https://github.com/maruiz93/kubearchive-te
 - **Policy must be applied after creation**: Passing `--policy` at `sandbox create` time does not replace the built-in default policies. The custom policy must be applied separately via `openshell policy set <name> --policy <file> --wait`.
 - **Cold-start race condition**: The first sandbox after gateway start can timeout during policy application while the policy engine initializes. Workaround: retry `policy set` up to 3 times with a delay.
 - **Agent early stopping in `--print` mode**: When the triage agent's first tool call failed, the agent would abandon the approach and try alternative strategies, then stop after one step. Fix: strengthen the triage agent prompt to require completing all steps before producing output, and ensure the REST API is reliable.
-- **SSRF guard blocks host access**: OpenShell blocks all RFC 1918 private IPs by default (SSRF protection). Connections to `host.docker.internal` resolve to a private IP, so the proxy returns 502 Bad Gateway. Fix: add `allowed_ips` to policy endpoints that need host access, listing the private IP CIDRs (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`). This explicitly tells the proxy to allow the private IP for that specific endpoint.
+- **SSRF guard blocks host access**: OpenShell blocks all RFC 1918 private IPs by default (SSRF protection). Connections to `host.docker.internal` resolve to a private IP, so the proxy returns 502 Bad Gateway. Fix: add `allowed_ips` with the exact host IP (`{{HOST_IP}}/32`) to policy endpoints that need host access. The agent runner resolves `host.docker.internal` at runtime and substitutes the placeholder, so only the specific host IP is allowed — not the entire RFC 1918 space.
 - **Vertex AI credentials in sandboxes**: Claude CLI inside sandboxes needs Vertex AI authentication, but credentials don't carry into sandboxes automatically. Fix: copy the GCP credentials file into each sandbox and export `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, and `GOOGLE_APPLICATION_CREDENTIALS` env vars. Sandbox policies also need `*.googleapis.com:443` access.
 - **Sandbox readiness race**: `openshell sandbox create` returns after timeout (exit 124) while the image is still pulling. If `policy set` runs before the sandbox is ready, it times out. Fix: poll `openshell sandbox get` for "Ready" status before applying policies.
 
 ### OpenShell policy format
 
 OpenShell policies do not support:
-- **Variable substitution** (`${REPO}`, `${ISSUE_NUMBER}`): Policy paths are literal strings, not templates. Workaround: the agent runner substitutes `{{OWNER}}`, `{{REPO_NAME}}`, and `{{ISSUE_NUMBER}}` placeholders at runtime before applying the policy, enabling per-repo and per-issue path scoping.
+- **Variable substitution** (`${REPO}`, `${ISSUE_NUMBER}`): Policy paths are literal strings, not templates. Workaround: the agent runner substitutes `{{OWNER}}`, `{{REPO_NAME}}`, `{{ISSUE_NUMBER}}`, and `{{HOST_IP}}` placeholders at runtime before applying the policy, enabling per-repo, per-issue path scoping and host-specific IP allowlisting.
 - **Wildcard host `**`**: L7 policies reject `host: "**"`. Use specific TLD patterns like `*.com`, `*.io` instead, with `protocol: tcp` (L4) for broad access.
 - **Custom HTTP method rules**: The `rules` field with `method` and `path` requires `tls: terminate` for L7 inspection. Alternatively, `access: read-only` or `access: read-write` can be used for simpler L4 enforcement without path restrictions.
-- **Private IPs blocked by default**: The proxy has built-in SSRF protection that rejects connections to RFC 1918 addresses. To allow host access (e.g., REST servers on `host.docker.internal`), add `allowed_ips` with the relevant CIDRs to the endpoint definition.
+- **Private IPs blocked by default**: The proxy has built-in SSRF protection that rejects connections to RFC 1918 addresses. To allow host access (e.g., REST servers on `host.docker.internal`), add `allowed_ips` with the exact host IP (`{{HOST_IP}}/32`, resolved at runtime) to the endpoint definition.
 
 ### Limitations
 

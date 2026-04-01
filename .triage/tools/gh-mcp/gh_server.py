@@ -91,12 +91,13 @@ def make_http_handler(token: str, allowed_repo: str) -> type:
                 if not query:
                     self._send_json(400, {"error": "Missing query parameter 'q'"})
                     return
-                # Enforce repo scope in search
-                if f"repo:{allowed_repo}" not in query:
-                    query = f"repo:{allowed_repo} {query}"
+                # Use --repo flag to scope the search instead of
+                # injecting repo: into the query string (which causes
+                # gh CLI to produce malformed API queries).
                 result = gh(
-                    ["search", "issues", query, "--json",
-                     "number,title,state,repository"],
+                    ["search", "issues", query,
+                     "--repo", allowed_repo,
+                     "--json", "number,title,state,repository"],
                     token,
                 )
                 if result.returncode != 0:
@@ -105,7 +106,7 @@ def make_http_handler(token: str, allowed_repo: str) -> type:
                 self._send_json(200, json.loads(result.stdout))
                 return
 
-            self.send_error(404, f"Not found: {self.path}")
+            self._send_json(404, {"error": f"Not found: {self.path}"})
 
         def do_POST(self):
             content_length = int(self.headers.get("Content-Length", 0))
@@ -113,8 +114,8 @@ def make_http_handler(token: str, allowed_repo: str) -> type:
 
             try:
                 body = json.loads(body_bytes) if body_bytes else {}
-            except json.JSONDecodeError:
-                self.send_error(400, "Invalid JSON")
+            except json.JSONDecodeError as e:
+                self._send_json(400, {"error": f"Invalid JSON: {e}"})
                 return
 
             parts = self.path.split("/")
@@ -212,7 +213,7 @@ def make_http_handler(token: str, allowed_repo: str) -> type:
                 self._send_json(200, json.loads(view_result.stdout))
                 return
 
-            self.send_error(404, f"Not found: {self.path}")
+            self._send_json(404, {"error": f"Not found: {self.path}"})
 
         def _send_json(self, status: int, data) -> None:
             body = json.dumps(data).encode()
