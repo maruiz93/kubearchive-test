@@ -5,7 +5,7 @@ version: 1
 # No write access, no external web, no local filesystem beyond sandbox.
 #
 # Placeholders {{OWNER}} and {{REPO_NAME}} are substituted at runtime
-# by the launcher using REPO env var (set by launcher.py).
+# by the agent runner.
 
 filesystem_policy:
   include_workdir: true
@@ -51,7 +51,7 @@ network_policies:
   mcp_server:
     name: mcp-server
     endpoints:
-      # MCP server runs on the host. allowed_ips bypasses the default
+      # GitHub MCP server runs on the host. allowed_ips bypasses the default
       # SSRF guard that blocks private IPs (RFC 1918).
       - host: host.docker.internal
         port: 8081

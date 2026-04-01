@@ -1,12 +1,8 @@
-"""GitHub token acquisition and Vertex AI credential helpers."""
+"""GitHub token acquisition helpers."""
 
-import os
 import subprocess
 import sys
 import time
-
-from . import SANDBOX_CREDS_PATH
-from .sandbox import sandbox_scp
 
 
 def get_token_from_gh_cli() -> str:
@@ -64,44 +60,3 @@ def get_token_from_github_app(
     token_data = resp.json()
     print(f"Token expires: {token_data.get('expires_at', 'N/A')}")
     return token_data["token"]
-
-
-def get_vertex_env() -> dict[str, str]:
-    """Collect Vertex AI environment variables from the host, if present."""
-    vertex_vars = {}
-    for key in ("CLAUDE_CODE_USE_VERTEX", "ANTHROPIC_VERTEX_PROJECT_ID", "CLOUD_ML_REGION"):
-        val = os.environ.get(key)
-        if val:
-            vertex_vars[key] = val
-    return vertex_vars
-
-
-def get_vertex_creds_path() -> str | None:
-    """Return the path to the GCP credentials file, if set."""
-    path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if path and os.path.isfile(path):
-        return path
-    return None
-
-
-def bootstrap_vertex_creds(
-    ssh_config_path: str,
-    sandbox_name: str,
-) -> str:
-    """Copy GCP credentials into the sandbox. Returns export commands."""
-
-    def scp(local, remote):
-        sandbox_scp(ssh_config_path, sandbox_name, local, remote)
-
-    vertex_env = get_vertex_env()
-    creds_path = get_vertex_creds_path()
-
-    exports = ""
-    for key, val in vertex_env.items():
-        exports += f"export {key}='{val}' && "
-
-    if creds_path:
-        scp(creds_path, SANDBOX_CREDS_PATH)
-        exports += f"export GOOGLE_APPLICATION_CREDENTIALS='{SANDBOX_CREDS_PATH}' && "
-
-    return exports

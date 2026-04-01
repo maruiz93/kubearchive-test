@@ -7,7 +7,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import LOG_DIR, SANDBOX_CLAUDE_CONFIG
+LOG_DIR = "/tmp/triage-logs"  # nosec B108
+SANDBOX_CLAUDE_CONFIG = "/tmp/claude-config"  # nosec B108
 
 
 def create_sandbox(name: str) -> None:

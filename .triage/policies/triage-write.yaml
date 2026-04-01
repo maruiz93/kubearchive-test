@@ -56,7 +56,7 @@ network_policies:
   mcp_server:
     name: mcp-server
     endpoints:
-      # MCP server runs on the host. allowed_ips bypasses the default
+      # GitHub MCP server runs on the host. allowed_ips bypasses the default
       # SSRF guard that blocks private IPs (RFC 1918).
       - host: host.docker.internal
         port: 8081
@@ -69,13 +69,12 @@ network_policies:
           - "192.168.0.0/16"
     binaries:
       - path: "**"
-  subagent_executor:
-    name: subagent-executor
+  agent_runner:
+    name: agent-runner
     endpoints:
-      # Executor HTTP service on the host handles sandbox lifecycle
-      # for subagents. The triage agent delegates via HTTP instead of
-      # creating sandboxes directly (gateway auth not available from
-      # inside a sandbox).
+      # Agent runner MCP server on the host handles sandbox lifecycle.
+      # The triage agent delegates via MCP instead of creating sandboxes
+      # directly (gateway auth not available from inside a sandbox).
       - host: host.docker.internal
         port: 8082
         protocol: rest

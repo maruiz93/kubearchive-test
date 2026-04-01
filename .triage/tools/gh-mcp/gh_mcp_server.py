@@ -367,7 +367,7 @@ def run_http(token: str, allowed_repo: str, port: int) -> None:
     """Run MCP server over HTTP (streamable-http transport)."""
     handler = make_http_handler(token, allowed_repo)
     server = HTTPServer(("0.0.0.0", port), handler)  # nosec B104
-    print(f"MCP server listening on http://0.0.0.0:{port}/", file=sys.stderr)
+    print(f"GitHub MCP server listening on http://0.0.0.0:{port}/", file=sys.stderr)
     sys.stderr.flush()
     server.serve_forever()
 

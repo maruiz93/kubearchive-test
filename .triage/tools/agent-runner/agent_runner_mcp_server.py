@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-MCP server that exposes a run_agent tool for subagent execution.
+MCP server that exposes a run_agent tool for sandboxed agent execution.
 
 The server manages sandbox lifecycle on the host — creating, bootstrapping,
-running, and cleaning up OpenShell sandboxes for each subagent invocation.
+running, and cleaning up OpenShell sandboxes for each agent invocation.
 The triage agent (inside its own sandbox) calls this as an MCP tool.
 
 Usage:
-  python3 executor_mcp_server.py --http --port 8082
+  python3 agent_runner_mcp_server.py --http --port 8082
 
 Requires environment variables:
-  EXECUTOR_WORKING_DIR: path to the experiment directory
-  EXECUTOR_MCP_CONFIG: path to the MCP config file for subagents
-  EXECUTOR_OWNER: GitHub org/owner
-  EXECUTOR_REPO_NAME: GitHub repo name
-  EXECUTOR_ISSUE_NUMBER: issue number being triaged
+  AGENT_RUNNER_WORKING_DIR: path to the experiment directory
+  AGENT_RUNNER_MCP_CONFIG: path to the MCP config file for agents
+  AGENT_RUNNER_OWNER: GitHub org/owner
+  AGENT_RUNNER_REPO_NAME: GitHub repo name
+  AGENT_RUNNER_ISSUE_NUMBER: issue number being triaged
 """
 
 import json
@@ -23,10 +23,10 @@ import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
-# Add the experiment root to sys.path so we can import the launcher package
-sys.path.insert(0, os.environ.get("EXECUTOR_WORKING_DIR", "."))
+# Add this directory to sys.path so we can import runner and sandbox
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from launcher.executor import SubagentExecutor  # noqa: E402
+from runner import AgentRunner  # noqa: E402
 
 TOOLS = {
     "run_agent": {
@@ -54,6 +54,11 @@ TOOLS = {
                         "The prompt to send to the agent, including repo and issue context"
                     ),
                 },
+                "stream": {
+                    "type": "boolean",
+                    "description": ("Stream agent output to stderr in real time (default: false)"),
+                    "default": False,
+                },
             },
             "required": ["agent_name", "prompt"],
         },
@@ -61,7 +66,7 @@ TOOLS = {
 }
 
 
-def handle_request(request: dict, executor: SubagentExecutor) -> dict:
+def handle_request(request: dict, runner: AgentRunner) -> dict:
     """Handle a single JSON-RPC request."""
     method = request.get("method", "")
     req_id = request.get("id")
@@ -75,7 +80,7 @@ def handle_request(request: dict, executor: SubagentExecutor) -> dict:
                 "protocolVersion": "2024-11-05",
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": {
-                    "name": "fullsend-executor",
+                    "name": "fullsend-agent-runner",
                     "version": "0.1.0",
                 },
             },
@@ -120,6 +125,7 @@ def handle_request(request: dict, executor: SubagentExecutor) -> dict:
 
         agent_name = arguments.get("agent_name", "")
         prompt = arguments.get("prompt", "")
+        stream = arguments.get("stream", False)
 
         if not agent_name or not prompt:
             return {
@@ -136,7 +142,7 @@ def handle_request(request: dict, executor: SubagentExecutor) -> dict:
                 },
             }
 
-        exit_code, output = executor.run_agent(agent_name, prompt)
+        exit_code, output = runner.run_agent(agent_name, prompt, stream=stream)
 
         return {
             "jsonrpc": "2.0",
@@ -157,10 +163,10 @@ def handle_request(request: dict, executor: SubagentExecutor) -> dict:
     }
 
 
-def make_http_handler(executor: SubagentExecutor) -> type:
-    """Create an HTTP handler with the executor bound."""
+def make_http_handler(runner: AgentRunner) -> type:
+    """Create an HTTP handler with the runner bound."""
 
-    class ExecutorMCPHandler(BaseHTTPRequestHandler):
+    class AgentRunnerMCPHandler(BaseHTTPRequestHandler):
         def do_POST(self):
             content_length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(content_length)
@@ -171,7 +177,7 @@ def make_http_handler(executor: SubagentExecutor) -> type:
                 self.send_error(400, "Invalid JSON")
                 return
 
-            response = handle_request(request, executor)
+            response = handle_request(request, runner)
 
             if response is None:
                 self.send_response(204)
@@ -186,15 +192,15 @@ def make_http_handler(executor: SubagentExecutor) -> type:
             self.wfile.write(response_body)
 
         def log_message(self, format, *args):
-            print(f"[executor-mcp] {args[0]}", file=sys.stderr)
+            print(f"[agent-runner] {args[0]}", file=sys.stderr)
 
-    return ExecutorMCPHandler
+    return AgentRunnerMCPHandler
 
 
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="MCP server for subagent execution")
+    parser = argparse.ArgumentParser(description="MCP server for sandboxed agent execution")
     parser.add_argument(
         "--http",
         action="store_true",
@@ -208,24 +214,24 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    working_dir = os.environ.get("EXECUTOR_WORKING_DIR")
-    mcp_config = os.environ.get("EXECUTOR_MCP_CONFIG")
-    owner = os.environ.get("EXECUTOR_OWNER")
-    repo_name = os.environ.get("EXECUTOR_REPO_NAME")
-    issue_number = os.environ.get("EXECUTOR_ISSUE_NUMBER")
+    working_dir = os.environ.get("AGENT_RUNNER_WORKING_DIR")
+    mcp_config = os.environ.get("AGENT_RUNNER_MCP_CONFIG")
+    owner = os.environ.get("AGENT_RUNNER_OWNER")
+    repo_name = os.environ.get("AGENT_RUNNER_REPO_NAME")
+    issue_number = os.environ.get("AGENT_RUNNER_ISSUE_NUMBER")
 
     for name, val in [
-        ("EXECUTOR_WORKING_DIR", working_dir),
-        ("EXECUTOR_MCP_CONFIG", mcp_config),
-        ("EXECUTOR_OWNER", owner),
-        ("EXECUTOR_REPO_NAME", repo_name),
-        ("EXECUTOR_ISSUE_NUMBER", issue_number),
+        ("AGENT_RUNNER_WORKING_DIR", working_dir),
+        ("AGENT_RUNNER_MCP_CONFIG", mcp_config),
+        ("AGENT_RUNNER_OWNER", owner),
+        ("AGENT_RUNNER_REPO_NAME", repo_name),
+        ("AGENT_RUNNER_ISSUE_NUMBER", issue_number),
     ]:
         if not val:
             print(f"Error: {name} not set", file=sys.stderr)
             sys.exit(1)
 
-    executor = SubagentExecutor(
+    runner = AgentRunner(
         working_dir=Path(working_dir),
         mcp_config_path=mcp_config,
         owner=owner,
@@ -240,13 +246,13 @@ def main() -> None:
         )
         sys.exit(1)
 
-    handler = make_http_handler(executor)
+    handler = make_http_handler(runner)
     server = HTTPServer(
         ("0.0.0.0", args.port),
         handler,  # nosec B104
     )
     print(
-        f"Executor MCP server listening on http://0.0.0.0:{args.port}/",
+        f"Agent runner MCP server listening on http://0.0.0.0:{args.port}/",
         file=sys.stderr,
     )
     sys.stderr.flush()
