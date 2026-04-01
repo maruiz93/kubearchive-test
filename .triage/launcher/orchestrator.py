@@ -1,4 +1,4 @@
-"""Orchestrator: starts MCP servers and launches the triage agent via the agent runner."""
+"""Orchestrator: starts servers and launches the triage agent via the agent runner."""
 
 import json
 import os
@@ -13,22 +13,32 @@ from pathlib import Path
 from . import AGENT_RUNNER_PORT, GH_MCP_PORT
 
 
-def _wait_for_mcp_server(port: int, label: str, timeout: int = 10) -> None:
-    """Wait for an MCP server to respond on the given port."""
+def _wait_for_server(port: int, label: str, *, mcp: bool = False, timeout: int = 10) -> None:
+    """Wait for a server to respond on the given port.
+
+    For MCP servers, sends a JSON-RPC initialize request.
+    For REST servers, sends a GET to /health.
+    """
     for _ in range(timeout * 2):
         try:
-            req = urllib.request.Request(
-                f"http://localhost:{port}/",
-                data=json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 0,
-                        "method": "initialize",
-                    }
-                ).encode(),
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
+            if mcp:
+                req = urllib.request.Request(
+                    f"http://localhost:{port}/",
+                    data=json.dumps(
+                        {
+                            "jsonrpc": "2.0",
+                            "id": 0,
+                            "method": "initialize",
+                        }
+                    ).encode(),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+            else:
+                req = urllib.request.Request(
+                    f"http://localhost:{port}/health",
+                    method="GET",
+                )
             urllib.request.urlopen(req, timeout=1)  # nosec B310
             return
         except Exception:
@@ -56,19 +66,19 @@ def _start_gh_mcp_server(token: str, repo: str, working_dir: Path) -> subprocess
         stdout=subprocess.DEVNULL,
         stderr=sys.stderr,
     )
-    _wait_for_mcp_server(GH_MCP_PORT, "GitHub MCP server")
+    _wait_for_server(GH_MCP_PORT, "GitHub MCP server", mcp=True)
     return process
 
 
-def _start_agent_runner_mcp_server(
+def _start_agent_runner_server(
     working_dir: Path,
     mcp_config_path: str,
     owner: str,
     repo_name: str,
     issue_number: int,
 ) -> subprocess.Popen:
-    """Start the agent runner MCP server as a background HTTP process."""
-    server_path = working_dir / "tools" / "agent-runner" / "agent_runner_mcp_server.py"
+    """Start the agent runner REST server as a background HTTP process."""
+    server_path = working_dir / "tools" / "agent-runner" / "agent_runner_server.py"
     env = {
         **os.environ,
         "AGENT_RUNNER_WORKING_DIR": str(working_dir),
@@ -81,7 +91,6 @@ def _start_agent_runner_mcp_server(
         [  # nosec B607
             "python3",
             str(server_path),
-            "--http",
             "--port",
             str(AGENT_RUNNER_PORT),
         ],
@@ -89,7 +98,7 @@ def _start_agent_runner_mcp_server(
         stdout=subprocess.DEVNULL,
         stderr=sys.stderr,
     )
-    _wait_for_mcp_server(AGENT_RUNNER_PORT, "Agent runner MCP server")
+    _wait_for_server(AGENT_RUNNER_PORT, "Agent runner server")
     return process
 
 
@@ -121,13 +130,13 @@ def launch_agent(
         sys.exit(1)
 
     gh_mcp_process = None
-    runner_mcp_process = None
+    runner_process = None
     mcp_config_file_path = None
 
     def cleanup():
-        if runner_mcp_process:
-            runner_mcp_process.terminate()
-            runner_mcp_process.wait(timeout=5)
+        if runner_process:
+            runner_process.terminate()
+            runner_process.wait(timeout=5)
         if gh_mcp_process:
             gh_mcp_process.terminate()
             gh_mcp_process.wait(timeout=5)
@@ -138,16 +147,12 @@ def launch_agent(
         # 1. Start GitHub MCP server
         gh_mcp_process = _start_gh_mcp_server(token, repo, working_dir)
 
-        # 2. Write MCP config with both servers
+        # 2. Write MCP config (GitHub MCP server only — agent runner is REST)
         mcp_config = {
             "mcpServers": {
                 "github-triage": {
                     "type": "http",
                     "url": f"http://host.docker.internal:{GH_MCP_PORT}/",
-                },
-                "agent-runner": {
-                    "type": "http",
-                    "url": f"http://host.docker.internal:{AGENT_RUNNER_PORT}/",
                 },
             }
         }
@@ -160,8 +165,8 @@ def launch_agent(
             json.dump(mcp_config, mcp_config_tmp)
             mcp_config_file_path = mcp_config_tmp.name
 
-        # 3. Start agent runner MCP server
-        runner_mcp_process = _start_agent_runner_mcp_server(
+        # 3. Start agent runner REST server
+        runner_process = _start_agent_runner_server(
             working_dir,
             mcp_config_file_path,
             owner,
@@ -175,40 +180,30 @@ def launch_agent(
         print(
             f"  Runner:    http://host.docker.internal"
             f":{AGENT_RUNNER_PORT}/"
-            f" (pid {runner_mcp_process.pid})"
+            f" (pid {runner_process.pid})"
         )
         print("---")
         sys.stdout.flush()
 
-        # 4. Run triage agent via the agent runner MCP server
-        #    (same sandbox lifecycle as subagents — the MCP server
+        # 4. Run triage agent via the agent runner REST server
+        #    (same sandbox lifecycle as subagents — the server
         #    is the single entry point for all agent execution)
-        rpc_request = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": "run_agent",
-                "arguments": {
-                    "agent_name": "triage",
-                    "prompt": prompt,
-                    "stream": True,
-                },
-            },
+        request_body = {
+            "agent_name": "triage",
+            "prompt": prompt,
+            "stream": True,
         }
         req = urllib.request.Request(
-            f"http://localhost:{AGENT_RUNNER_PORT}/",
-            data=json.dumps(rpc_request).encode(),
+            f"http://localhost:{AGENT_RUNNER_PORT}/run-agent",
+            data=json.dumps(request_body).encode(),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         resp = urllib.request.urlopen(req, timeout=660)  # nosec B310
         result = json.loads(resp.read().decode())
 
-        is_error = result.get("result", {}).get("isError", False)
-        if is_error:
-            output = result["result"]["content"][0]["text"]
-            print(f"\nAgent failed: {output}", file=sys.stderr)
+        if result.get("exit_code", 1) != 0:
+            print(f"\nAgent failed: {result.get('output', '')}", file=sys.stderr)
             sys.exit(1)
     finally:
         cleanup()

@@ -49,8 +49,8 @@ network_policies:
   agent_runner:
     name: agent-runner
     endpoints:
-      # Agent runner MCP server on the host handles sandbox lifecycle.
-      # The triage agent delegates via MCP instead of creating sandboxes
+      # Agent runner REST server on the host handles sandbox lifecycle.
+      # The triage agent delegates via curl instead of creating sandboxes
       # directly (gateway auth not available from inside a sandbox).
       - host: host.docker.internal
         port: 8082

@@ -29,18 +29,18 @@ A top-level agent orchestrates subagents. It has its own tools (in this case, wr
 flowchart TB
     launcher["launcher/\n(auth + MCP config)"]
     ghmcp["GitHub MCP Server :8081\n(holds GH_TOKEN)"]
-    runner["Agent Runner MCP Server :8082\n(sandbox lifecycle)"]
+    runner["Agent Runner REST Server :8082\n(sandbox lifecycle)"]
     gateway["OpenShell Gateway :8080"]
     ghapi[("GitHub API")]
 
     launcher -->|"starts"| ghmcp
     launcher -->|"starts"| runner
-    launcher -->|"MCP: run_agent(triage)"| runner
+    launcher -->|"REST: POST /run-agent(triage)"| runner
     runner <-->|"create, policy set,\nSSH, delete"| gateway
     ghmcp <-->|"scoped API calls"| ghapi
 
     subgraph sandbox0 ["OpenShell sandbox (triage-write.yaml)"]
-        triage["Triage Agent\ntools: comment_issue, add_label,\nrun_agent"]
+        triage["Triage Agent\ntools: comment_issue, add_label,\ncurl /run-agent"]
     end
 
     runner -->|"creates + runs"| triage
@@ -59,7 +59,7 @@ flowchart TB
         fs[("Local filesystem\n(read-only)")]
     end
 
-    triage -->|"MCP :8082\nrun_agent"| runner
+    triage -->|"REST :8082\nPOST /run-agent"| runner
     runner -->|"creates + runs"| dup
     runner -->|"creates + runs"| comp
     runner -->|"creates + runs\n(bugs only)"| repro
@@ -90,7 +90,7 @@ experiments/101-agent-scoped-tools/
 │   ├── __init__.py                          # Shared constants (ports)
 │   ├── __main__.py                          # CLI entry point (argparse)
 │   ├── auth.py                              # GitHub token acquisition helpers
-│   └── orchestrator.py                      # Starts MCP servers, launches triage via agent runner
+│   └── orchestrator.py                      # Starts servers, launches triage via agent runner
 ├── skills/
 │   ├── triage-coordination/SKILL.md         # Skill: orchestrate triage flow
 │   ├── detect-duplicates/SKILL.md           # Skill: find duplicate issues
@@ -110,19 +110,19 @@ experiments/101-agent-scoped-tools/
     ├── gh-mcp/
     │   └── gh_mcp_server.py                 # GitHub MCP server: holds token, exposes scoped tools
     └── agent-runner/
-        ├── agent_runner_mcp_server.py       # Agent runner MCP server: entry point + HTTP handler
+        ├── agent_runner_server.py           # Agent runner REST server: POST /run-agent endpoint
         ├── runner.py                        # Agent runner: sandbox lifecycle for all agents
         └── sandbox.py                       # OpenShell primitives (create, delete, policy, SSH, SCP)
 ```
 
 ## How it works
 
-1. **`launcher/`** authenticates as a GitHub App, generates a repo-scoped token, starts two MCP servers (GitHub tools on `:8081` and agent runner on `:8082`), and launches the triage agent via the agent runner in its own OpenShell sandbox
-2. **The triage agent** reads the issue, then decides which subagents to invoke via the `run_agent` MCP tool:
+1. **`launcher/`** authenticates as a GitHub App, generates a repo-scoped token, starts the GitHub MCP server (`:8081`) and agent runner REST server (`:8082`), and launches the triage agent via the agent runner in its own OpenShell sandbox
+2. **The triage agent** reads the issue, then decides which subagents to invoke via `curl` to the agent runner REST API:
    - Always runs **duplicate-detector** and **completeness-assessor**
    - Runs **reproducibility-verifier** only for bug reports
    - Can skip checks if a high-confidence duplicate is found
-3. **Each subagent** is created by the agent runner MCP server in a fresh sandbox with its own policy, runs with read-only tools, and returns structured findings
+3. **Each subagent** is created by the agent runner in a fresh sandbox with its own policy, runs with read-only tools, and returns structured findings
 4. **The triage agent** collects findings, applies labels, and posts a triage summary comment
 
 The top-level agent is the only one with write tools (`comment_issue`, `add_label`). Subagents can only read. This enforces a clear separation: subagents analyze, the orchestrator acts.
@@ -201,7 +201,8 @@ The file formats follow Claude Code conventions (the stricter of the two) with n
 
 - **Skills** are fully portable between both runtimes. The `allowed-tools` field is a no-op in OpenCode but doesn't break parsing.
 - **Agent definitions** use Claude Code format. To use with OpenCode, the `tools` field would need to be translated to OpenCode's `permission` object, and `skills` would need to be invoked via the skill tool rather than preloaded.
-- **MCP servers** (`tools/gh-mcp/gh_mcp_server.py` and `tools/agent-runner/agent_runner_mcp_server.py`) are runtime-agnostic — they support both stdio and HTTP transport. In sandboxed mode, they run as HTTP servers on the host and agents connect via `host.docker.internal`.
+- **GitHub MCP server** (`tools/gh-mcp/gh_mcp_server.py`) is runtime-agnostic — it supports both stdio and HTTP transport. In sandboxed mode, it runs as an HTTP server on the host and agents connect via `host.docker.internal`.
+- **Agent runner** (`tools/agent-runner/agent_runner_server.py`) is a plain REST API (not MCP) that the triage agent calls via `curl`. This avoids MCP client timeout issues with long-running sandbox operations.
 
 ## Security layers
 
@@ -214,7 +215,7 @@ The file formats follow Claude Code conventions (the stricter of the two) with n
 - Each subagent runs in clean context (no leaking between subagents)
 - Subagents have read-only tools — cannot write to issues
 - Only the top-level agent has write tools
-- Subagents are invoked via the agent runner MCP server which creates each in its own OpenShell sandbox
+- Subagents are invoked via the agent runner REST server which creates each in its own OpenShell sandbox
 
 **GitHub MCP server (credential isolation):**
 - Token lives only in the GitHub MCP server process
@@ -230,7 +231,7 @@ The file formats follow Claude Code conventions (the stricter of the two) with n
 
 Each agent runs in its own [OpenShell](https://github.com/NVIDIA/OpenShell) sandbox with a tailored network policy. The `sandbox` field in each agent's definition points to its policy file — the agent definition is the single source of truth.
 
-The triage agent invokes subagents via the `run_agent` MCP tool, which delegates to the host-side agent runner. The agent runner:
+The triage agent invokes subagents via `curl` to the agent runner REST API (`POST /run-agent`), which delegates to the host-side agent runner. The agent runner:
 1. Reads the `sandbox` field from the target agent's `.md` frontmatter
 2. Creates a persistent OpenShell sandbox
 3. Applies the custom policy via `policy set --wait` (replaces built-in defaults)
@@ -238,7 +239,7 @@ The triage agent invokes subagents via the `run_agent` MCP tool, which delegates
 5. Runs the subagent inside the sandbox via SSH
 6. Extracts transcripts and cleans up the sandbox on exit
 
-This approach was chosen because `SubagentStart` hooks do not fire in Claude Code's `--print` mode (required for CI). By using an MCP tool backed by a host-side server, the triage agent delegates sandbox management without needing direct access to the OpenShell gateway (which is not available from inside a sandbox).
+This approach was chosen because `SubagentStart` hooks do not fire in Claude Code's `--print` mode (required for CI). By using a REST API backed by a host-side server, the triage agent delegates sandbox management without needing direct access to the OpenShell gateway (which is not available from inside a sandbox). The agent runner uses a plain REST API (not MCP) to avoid MCP client timeout issues with long-running sandbox operations.
 
 ### Sandbox policies per agent
 
@@ -262,7 +263,7 @@ A compromised read-only subagent can't write to GitHub even if it somehow bypass
 
 ### CI integration
 
-The MCP-based agent runner approach works in both interactive and `--print` mode. In CI (GitHub Actions), the workflow installs OpenShell, starts a gateway, and the agent runner MCP server handles sandbox lifecycle for each subagent. OpenShell is required — if it's unavailable or the gateway isn't running, the agent runner fails hard rather than falling back to unsandboxed execution.
+The agent runner approach works in both interactive and `--print` mode. In CI (GitHub Actions), the workflow installs OpenShell, starts a gateway, and the agent runner REST server handles sandbox lifecycle for each subagent. OpenShell is required — if it's unavailable or the gateway isn't running, the agent runner fails hard rather than falling back to unsandboxed execution.
 
 ## Findings from testing
 
@@ -277,7 +278,7 @@ Tested on [maruiz93/kubearchive-test](https://github.com/maruiz93/kubearchive-te
 
 ### What required workarounds
 
-- **`--print` mode and hooks**: `SubagentStart` hooks do not fire in Claude Code's `--print` mode, which is required for CI. Workaround: use an MCP tool (`run_agent`) backed by a host-side agent runner server instead of hooks to manage sandboxed subagent execution.
+- **`--print` mode and hooks**: `SubagentStart` hooks do not fire in Claude Code's `--print` mode, which is required for CI. Workaround: use a REST API (`POST /run-agent`) backed by a host-side agent runner server instead of hooks to manage sandboxed subagent execution.
 - **OpenShell `sandbox create` is always interactive**: There is no one-shot command execution mode. Workaround: use `timeout` to create the sandbox, then `policy set --wait` to apply the policy, then SSH to run commands non-interactively.
 - **Policy must be applied after creation**: Passing `--policy` at `sandbox create` time does not replace the built-in default policies. The custom policy must be applied separately via `openshell policy set <name> --policy <file> --wait`.
 - **Cold-start race condition**: The first sandbox after gateway start can timeout during policy application while the policy engine initializes. Workaround: retry `policy set` up to 3 times with a delay.
