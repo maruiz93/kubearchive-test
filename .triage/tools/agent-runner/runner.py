@@ -247,6 +247,7 @@ class AgentRunner:
                 f"export CLAUDE_CONFIG_DIR={SANDBOX_CLAUDE_CONFIG} && "
                 f"export REPO='{self.owner}/{self.repo_name}' && "
                 f"export ISSUE_NUMBER='{self.issue_number}' && "
+                f"export MCP_TIMEOUT=300000 && "
                 f"{vertex_exports}"
                 f"claude --print --agent '{agent_name}' "
                 f"--mcp-config '{mcp_config}' "
