@@ -9,7 +9,7 @@ Counterpart to [experiment 67](../67-claude-github-app-auth/) which demonstrates
 - **Agent-driven orchestration**: A top-level agent spawns subagents dynamically based on a prompt and available tools — it decides which subagents to invoke, in what order, and whether to skip steps based on context.
 - **Every agent is sandboxed**: Both the orchestrator and every subagent run inside their own [OpenShell](https://github.com/NVIDIA/OpenShell) sandbox. No agent runs unsandboxed.
 - **Tools are scoped per agent via skills**: Each agent has access only to the tools its skill declares. Subagents get read-only tools; only the orchestrator has write tools. This is enforced at both the runtime level (agent/skill definitions) and the infrastructure level (sandbox policies).
-- **Sensitive tokens are isolated from agents**: The GitHub token lives exclusively in the GitHub MCP server process — agents never see `GH_TOKEN` in their environment. They interact with GitHub only through MCP tools, which validate every request. Even if an agent is compromised, it has no credential to exfiltrate.
+- **Sensitive tokens are isolated from agents**: The GitHub token lives exclusively in the host-side GitHub REST server process — agents never see `GH_TOKEN` in their environment. They interact with GitHub only through the REST API via `curl`, and L7 network policies enforce which methods and paths each agent can reach. Even if an agent is compromised, it has no credential to exfiltrate.
 - **Per-agent sandbox guardrails covering filesystem and network**: Each sandbox has a tailored policy that restricts both filesystem access (read-only vs. read-write paths) and network egress (which hosts, ports, HTTP methods, and API paths are allowed). The orchestrator can POST comments; subagents can only GET. One subagent can fetch external URLs; another can read the local filesystem; the rest have no access to either.
 
 ## Concepts
@@ -18,7 +18,7 @@ Counterpart to [experiment 67](../67-claude-github-app-auth/) which demonstrates
 A **skill** is a reusable capability definition: a prompt and a set of allowed tools. Skills define *what* to do, not *how* to execute it. They live as `SKILL.md` files following the [Agent Skills](https://agentskills.io) open standard.
 
 ### Agents
-An **agent** is an execution context that uses one skill. It defines *how* to run: which model, which MCP servers, which tools, what permissions. Each agent does one job.
+An **agent** is an execution context that uses one skill. It defines *how* to run: which model, which tools, what permissions. Each agent does one job.
 
 ### Top-level agent
 A top-level agent orchestrates subagents. It has its own tools (in this case, write tools for commenting and labeling) and decides which subagents to invoke and in what order based on context. This gives flexibility — the top-level agent can skip steps, change order, or adapt based on findings.
@@ -27,8 +27,8 @@ A top-level agent orchestrates subagents. It has its own tools (in this case, wr
 
 ```mermaid
 flowchart TB
-    launcher["launcher/\n(auth + MCP config)"]
-    ghmcp["GitHub MCP Server :8081\n(holds GH_TOKEN)"]
+    launcher["launcher/\n(auth + server startup)"]
+    ghmcp["GitHub REST Server :8081\n(holds GH_TOKEN)"]
     runner["Agent Runner REST Server :8082\n(sandbox lifecycle)"]
     gateway["OpenShell Gateway :8080"]
     ghapi[("GitHub API")]
@@ -40,22 +40,22 @@ flowchart TB
     ghmcp <-->|"scoped API calls"| ghapi
 
     subgraph sandbox0 ["OpenShell sandbox (triage-write.yaml)"]
-        triage["Triage Agent\ntools: comment_issue, add_label,\ncurl /run-agent"]
+        triage["Triage Agent\ntools: curl (GH write + run-agent)"]
     end
 
     runner -->|"creates + runs"| triage
 
     subgraph sandbox1 ["OpenShell sandbox (readonly.yaml)"]
-        dup["Duplicate Detector\ntools: read_issue, list_issues"]
+        dup["Duplicate Detector\ntools: curl (GH read-only)"]
     end
 
     subgraph sandbox2 ["OpenShell sandbox (readonly-with-web.yaml)"]
-        comp["Completeness Assessor\ntools: read_issue, WebFetch"]
+        comp["Completeness Assessor\ntools: curl (GH read-only), WebFetch"]
         web[("External URLs")]
     end
 
     subgraph sandbox3 ["OpenShell sandbox (readonly-with-local.yaml)"]
-        repro["Reproducibility Verifier\ntools: read_issue, Bash(grep/find/cat)"]
+        repro["Reproducibility Verifier\ntools: curl (GH read-only), Bash(grep/find/cat)"]
         fs[("Local filesystem\n(read-only)")]
     end
 
@@ -72,10 +72,10 @@ flowchart TB
     comp ---|"HTTPS GET"| web
     repro ---|"grep, find, cat"| fs
 
-    dup <-.->|"HTTP :8081\nread-only"| ghmcp
-    comp <-.->|"HTTP :8081\nread-only"| ghmcp
-    repro <-.->|"HTTP :8081\nread-only"| ghmcp
-    triage <-.->|"HTTP :8081\nread-write"| ghmcp
+    dup <-.->|"GET :8081\nread-only"| ghmcp
+    comp <-.->|"GET :8081\nread-only"| ghmcp
+    repro <-.->|"GET :8081\nread-only"| ghmcp
+    triage <-.->|"GET+POST :8081\nread-write"| ghmcp
 ```
 
 Each agent runs in its own OpenShell sandbox with a tailored network policy. The sandbox enforces at the infrastructure level what the runtime tool scoping enforces at the application level — defense in depth.
@@ -108,7 +108,7 @@ experiments/101-agent-scoped-tools/
 │   └── readonly-with-local.yaml             # OpenShell policy: read-only + local filesystem
 └── tools/
     ├── gh-mcp/
-    │   └── gh_mcp_server.py                 # GitHub MCP server: holds token, exposes scoped tools
+    │   └── gh_server.py                     # GitHub REST server: holds token, exposes scoped endpoints
     └── agent-runner/
         ├── agent_runner_server.py           # Agent runner REST server: POST /run-agent endpoint
         ├── runner.py                        # Agent runner: sandbox lifecycle for all agents
@@ -117,8 +117,8 @@ experiments/101-agent-scoped-tools/
 
 ## How it works
 
-1. **`launcher/`** authenticates as a GitHub App, generates a repo-scoped token, starts the GitHub MCP server (`:8081`) and agent runner REST server (`:8082`), and launches the triage agent via the agent runner in its own OpenShell sandbox
-2. **The triage agent** reads the issue, then decides which subagents to invoke via `curl` to the agent runner REST API:
+1. **`launcher/`** authenticates as a GitHub App, generates a repo-scoped token, starts the GitHub REST server (`:8081`) and agent runner REST server (`:8082`), and launches the triage agent via the agent runner in its own OpenShell sandbox
+2. **The triage agent** reads the issue via the GitHub REST server, then decides which subagents to invoke via `curl` to the agent runner:
    - Always runs **duplicate-detector** and **completeness-assessor**
    - Runs **reproducibility-verifier** only for bug reports
    - Can skip checks if a high-confidence duplicate is found
@@ -144,8 +144,8 @@ Subagents have read-only tools and return JSON. Only the top-level agent has wri
 - Write logic is centralized and auditable
 - The triage comment format is controlled by one agent
 
-### GitHub MCP server holds credentials
-The token lives in the GitHub MCP server process. Neither the top-level agent nor subagents have `GH_TOKEN` in their environment. They interact with GitHub exclusively through MCP tools, which validate every request.
+### GitHub REST server holds credentials
+The token lives in the GitHub REST server process on the host. Neither the top-level agent nor subagents have `GH_TOKEN` in their environment. They interact with GitHub exclusively through `curl` to the REST server, which validates every request. L7 network policies enforce which HTTP methods and paths each agent can reach ([ADR 0004](../../docs/ADRs/0004-credential-isolation-for-sandboxed-agents.md)).
 
 ## Key differences from experiment 67
 
@@ -195,14 +195,13 @@ The file formats follow Claude Code conventions (the stricter of the two) with n
 | `model` | `sonnet`, `haiku`, `opus`, or full ID | `provider/model-id` format |
 | `skills` | List of skill names preloaded into context | Not in agent frontmatter (agents invoke skills via tool) |
 | `Agent(name, ...)` in tools | Restricts which subagents can be spawned | Not supported (uses Task tool) |
-| `mcpServers` | Inline or reference by name | Not supported in agent frontmatter |
 
 ### What this means in practice
 
 - **Skills** are fully portable between both runtimes. The `allowed-tools` field is a no-op in OpenCode but doesn't break parsing.
 - **Agent definitions** use Claude Code format. To use with OpenCode, the `tools` field would need to be translated to OpenCode's `permission` object, and `skills` would need to be invoked via the skill tool rather than preloaded.
-- **GitHub MCP server** (`tools/gh-mcp/gh_mcp_server.py`) is runtime-agnostic — it supports both stdio and HTTP transport. In sandboxed mode, it runs as an HTTP server on the host and agents connect via `host.docker.internal`.
-- **Agent runner** (`tools/agent-runner/agent_runner_server.py`) is a plain REST API (not MCP) that the triage agent calls via `curl`. This avoids MCP client timeout issues with long-running sandbox operations.
+- **GitHub REST server** (`tools/gh-mcp/gh_server.py`) is a plain REST API that proxies GitHub operations. It runs on the host and agents call it via `curl` through `host.docker.internal`. L7 network policies enforce per-agent access (GET-only for subagents, GET+POST for triage).
+- **Agent runner** (`tools/agent-runner/agent_runner_server.py`) is a plain REST API that the triage agent calls via `curl` to spawn subagents in sandboxes.
 
 ## Security layers
 
@@ -217,15 +216,15 @@ The file formats follow Claude Code conventions (the stricter of the two) with n
 - Only the top-level agent has write tools
 - Subagents are invoked via the agent runner REST server which creates each in its own OpenShell sandbox
 
-**GitHub MCP server (credential isolation):**
-- Token lives only in the GitHub MCP server process
+**GitHub REST server (credential isolation):**
+- Token lives only in the GitHub REST server process on the host
 - Tools validate target repo matches the allowed repo
 - Credential scanning on comment bodies before posting
 
 **Sandbox (infrastructure enforcement):**
 - Agent processes have no `GH_TOKEN` in their environment
-- Network egress restricted to the MCP HTTP server on the host (`host.docker.internal:8081`)
-- Even if an agent bypasses MCP tools, it has no token to authenticate
+- Network egress restricted to the REST server on the host (`host.docker.internal:8081`), with L7 policy enforcing method/path restrictions per agent
+- Agents have no token — even if they bypass runtime tool restrictions, they cannot authenticate to GitHub directly
 
 ## Per-agent sandboxing with OpenShell
 
@@ -235,11 +234,11 @@ The triage agent invokes subagents via `curl` to the agent runner REST API (`POS
 1. Reads the `sandbox` field from the target agent's `.md` frontmatter
 2. Creates a persistent OpenShell sandbox
 3. Applies the custom policy via `policy set --wait` (replaces built-in defaults)
-4. Bootstraps the sandbox (copies claude binary, agent/skill definitions, MCP config, credentials)
+4. Bootstraps the sandbox (copies claude binary, agent/skill definitions, credentials)
 5. Runs the subagent inside the sandbox via SSH
 6. Extracts transcripts and cleans up the sandbox on exit
 
-This approach was chosen because `SubagentStart` hooks do not fire in Claude Code's `--print` mode (required for CI). By using a REST API backed by a host-side server, the triage agent delegates sandbox management without needing direct access to the OpenShell gateway (which is not available from inside a sandbox). The agent runner uses a plain REST API (not MCP) to avoid MCP client timeout issues with long-running sandbox operations.
+This approach was chosen because `SubagentStart` hooks do not fire in Claude Code's `--print` mode (required for CI). By using a REST API backed by a host-side server, the triage agent delegates sandbox management without needing direct access to the OpenShell gateway (which is not available from inside a sandbox).
 
 ### Sandbox policies per agent
 
@@ -256,10 +255,10 @@ Policies use OpenShell's `rules` field with `tls: terminate` for L7 path-level e
 
 Each layer enforces independently:
 - **Runtime** (Claude/OpenCode) enforces `tools` from agent frontmatter
-- **GitHub MCP server** enforces repo scoping and input validation
+- **GitHub REST server** enforces repo scoping and input validation
 - **OpenShell sandbox** enforces network-level access per agent
 
-A compromised read-only subagent can't write to GitHub even if it somehow bypasses both the runtime tool restriction and the GitHub MCP server — the sandbox blocks the HTTP method at the network layer.
+A compromised read-only subagent can't write to GitHub even if it somehow bypasses the runtime tool restriction — the sandbox's L7 network policy blocks POST requests at the network layer, and the agent has no GitHub token to use directly.
 
 ### CI integration
 
@@ -273,7 +272,7 @@ Tested on [maruiz93/kubearchive-test](https://github.com/maruiz93/kubearchive-te
 
 - **Multi-agent triage flow**: The triage agent successfully orchestrated duplicate-detector, completeness-assessor, and reproducibility-verifier subagents, collected their findings, applied labels, and posted triage summaries.
 - **OpenShell sandbox enforcement in CI**: Gateway starts on GitHub Actions runners (which have Docker), sandbox creation and policy application work, L7 enforcement verified (GET allowed, POST returns 403).
-- **Credential isolation**: The GitHub token lives only in the GitHub MCP server process. Agents have no `GH_TOKEN` in their environment.
+- **Credential isolation**: The GitHub token lives only in the GitHub REST server process on the host. Agents have no `GH_TOKEN` in their environment.
 - **Strict sandbox enforcement**: OpenShell is required — the agent runner fails hard if OpenShell is unavailable or sandbox creation fails, preventing unsandboxed execution.
 
 ### What required workarounds
@@ -282,7 +281,7 @@ Tested on [maruiz93/kubearchive-test](https://github.com/maruiz93/kubearchive-te
 - **OpenShell `sandbox create` is always interactive**: There is no one-shot command execution mode. Workaround: use `timeout` to create the sandbox, then `policy set --wait` to apply the policy, then SSH to run commands non-interactively.
 - **Policy must be applied after creation**: Passing `--policy` at `sandbox create` time does not replace the built-in default policies. The custom policy must be applied separately via `openshell policy set <name> --policy <file> --wait`.
 - **Cold-start race condition**: The first sandbox after gateway start can timeout during policy application while the policy engine initializes. Workaround: retry `policy set` up to 3 times with a delay.
-- **Agent early stopping in `--print` mode**: When the triage agent's first tool call failed, the agent would abandon the approach and try alternative strategies, then stop after one step. Fix: strengthen the triage agent prompt to require completing all steps before producing output, and ensure the MCP tool is reliable.
+- **Agent early stopping in `--print` mode**: When the triage agent's first tool call failed, the agent would abandon the approach and try alternative strategies, then stop after one step. Fix: strengthen the triage agent prompt to require completing all steps before producing output, and ensure the REST API is reliable.
 - **SSRF guard blocks host access**: OpenShell blocks all RFC 1918 private IPs by default (SSRF protection). Connections to `host.docker.internal` resolve to a private IP, so the proxy returns 502 Bad Gateway. Fix: add `allowed_ips` to policy endpoints that need host access, listing the private IP CIDRs (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`). This explicitly tells the proxy to allow the private IP for that specific endpoint.
 - **Vertex AI credentials in sandboxes**: Claude CLI inside sandboxes needs Vertex AI authentication, but credentials don't carry into sandboxes automatically. Fix: copy the GCP credentials file into each sandbox and export `CLAUDE_CODE_USE_VERTEX`, `ANTHROPIC_VERTEX_PROJECT_ID`, `CLOUD_ML_REGION`, and `GOOGLE_APPLICATION_CREDENTIALS` env vars. Sandbox policies also need `*.googleapis.com:443` access.
 - **Sandbox readiness race**: `openshell sandbox create` returns after timeout (exit 124) while the image is still pulling. If `policy set` runs before the sandbox is ready, it times out. Fix: poll `openshell sandbox get` for "Ready" status before applying policies.
@@ -293,7 +292,7 @@ OpenShell policies do not support:
 - **Variable substitution** (`${REPO}`, `${ISSUE_NUMBER}`): Policy paths are literal strings, not templates. Workaround: the agent runner substitutes `{{OWNER}}`, `{{REPO_NAME}}`, and `{{ISSUE_NUMBER}}` placeholders at runtime before applying the policy, enabling per-repo and per-issue path scoping.
 - **Wildcard host `**`**: L7 policies reject `host: "**"`. Use specific TLD patterns like `*.com`, `*.io` instead, with `protocol: tcp` (L4) for broad access.
 - **Custom HTTP method rules**: The `rules` field with `method` and `path` requires `tls: terminate` for L7 inspection. Alternatively, `access: read-only` or `access: read-write` can be used for simpler L4 enforcement without path restrictions.
-- **Private IPs blocked by default**: The proxy has built-in SSRF protection that rejects connections to RFC 1918 addresses. To allow host access (e.g., MCP servers on `host.docker.internal`), add `allowed_ips` with the relevant CIDRs to the endpoint definition.
+- **Private IPs blocked by default**: The proxy has built-in SSRF protection that rejects connections to RFC 1918 addresses. To allow host access (e.g., REST servers on `host.docker.internal`), add `allowed_ips` with the relevant CIDRs to the endpoint definition.
 
 ### Limitations
 

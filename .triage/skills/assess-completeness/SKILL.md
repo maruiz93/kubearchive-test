@@ -1,8 +1,13 @@
 ---
 name: assess-completeness
 description: Check if an issue has all required information for action
-allowed-tools: Bash(gh issue view *), WebFetch
+allowed-tools: Bash(curl *), WebFetch
 ---
+
+Read the issue via the GitHub REST server:
+```bash
+curl -s http://host.docker.internal:8081/repos/$OWNER/$REPO_NAME/issues/$ISSUE_NUMBER
+```
 
 Evaluate whether the issue contains sufficient information.
 - For bugs: steps to reproduce, expected vs actual behavior, environment info.

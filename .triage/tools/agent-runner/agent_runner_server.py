@@ -14,7 +14,6 @@ Usage:
 
 Requires environment variables:
   AGENT_RUNNER_WORKING_DIR: path to the experiment directory
-  AGENT_RUNNER_MCP_CONFIG: path to the MCP config file for agents
   AGENT_RUNNER_OWNER: GitHub org/owner
   AGENT_RUNNER_REPO_NAME: GitHub repo name
   AGENT_RUNNER_ISSUE_NUMBER: issue number being triaged
@@ -103,14 +102,12 @@ def main() -> None:
     args = parser.parse_args()
 
     working_dir = os.environ.get("AGENT_RUNNER_WORKING_DIR")
-    mcp_config = os.environ.get("AGENT_RUNNER_MCP_CONFIG")
     owner = os.environ.get("AGENT_RUNNER_OWNER")
     repo_name = os.environ.get("AGENT_RUNNER_REPO_NAME")
     issue_number = os.environ.get("AGENT_RUNNER_ISSUE_NUMBER")
 
     for name, val in [
         ("AGENT_RUNNER_WORKING_DIR", working_dir),
-        ("AGENT_RUNNER_MCP_CONFIG", mcp_config),
         ("AGENT_RUNNER_OWNER", owner),
         ("AGENT_RUNNER_REPO_NAME", repo_name),
         ("AGENT_RUNNER_ISSUE_NUMBER", issue_number),
@@ -121,7 +118,6 @@ def main() -> None:
 
     runner = AgentRunner(
         working_dir=Path(working_dir),
-        mcp_config_path=mcp_config,
         owner=owner,
         repo_name=repo_name,
         issue_number=int(issue_number),

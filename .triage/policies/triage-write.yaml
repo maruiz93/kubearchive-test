@@ -1,8 +1,8 @@
 version: 1
 
 # Policy for the triage agent (orchestrator).
-# No direct GitHub API access — writes go through the GitHub MCP server.
-# Access to agent runner MCP server for spawning subagents.
+# Read+write access to GitHub REST server (comments, labels).
+# Access to agent runner REST server for spawning subagents.
 # No external web, no local filesystem beyond sandbox.
 #
 # Placeholders {{OWNER}}, {{REPO_NAME}}, and {{ISSUE_NUMBER}} are substituted
@@ -30,16 +30,32 @@ network_policies:
         access: allow
     binaries:
       - path: "**"
-  mcp_server:
-    name: mcp-server
+  gh_server:
+    name: gh-server-readwrite
     endpoints:
-      # GitHub MCP server runs on the host. allowed_ips bypasses the default
-      # SSRF guard that blocks private IPs (RFC 1918).
+      # GitHub REST server on the host. Full access (GET + POST) for
+      # reading issues and writing comments/labels.
+      # allowed_ips bypasses default SSRF guard for private IPs.
       - host: host.docker.internal
         port: 8081
         protocol: rest
         enforcement: enforce
-        access: full
+        rules:
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues
+          - allow:
+              method: GET
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/*
+          - allow:
+              method: GET
+              path: /search/issues
+          - allow:
+              method: POST
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}/comments
+          - allow:
+              method: POST
+              path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}/labels
         allowed_ips:
           - "10.0.0.0/8"
           - "172.16.0.0/12"

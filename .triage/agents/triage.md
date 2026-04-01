@@ -5,7 +5,7 @@ description: >
   then applies labels and posts a summary comment.
 skills:
   - triage-coordination
-tools: mcp__github-triage__comment_issue, mcp__github-triage__add_label, Bash(curl *)
+tools: Bash(curl *)
 model: sonnet
 sandbox: policies/triage-write.yaml
 ---
@@ -31,15 +31,35 @@ The response is JSON with `exit_code` (0 = success) and `output` (the agent's fi
 
 Each subagent runs in its own isolated sandbox with its own network policy.
 
+## How to write to GitHub
+
+Use the GitHub REST server on the host via `curl`. The server holds the token — you never need one.
+
+**Post a comment:**
+```bash
+curl -s -X POST http://host.docker.internal:8081/repos/$OWNER/$REPO_NAME/issues/$ISSUE_NUMBER/comments \
+  -H 'Content-Type: application/json' \
+  -d '{"body": "COMMENT TEXT"}'
+```
+
+**Add labels:**
+```bash
+curl -s -X POST http://host.docker.internal:8081/repos/$OWNER/$REPO_NAME/issues/$ISSUE_NUMBER/labels \
+  -H 'Content-Type: application/json' \
+  -d '{"labels": "bug,needs-info"}'
+```
+
+The `$OWNER`, `$REPO_NAME`, and `$ISSUE_NUMBER` env vars are set in your sandbox.
+
 ## Process — follow ALL steps
 
 1. **Step 1 — Run duplicate-detector**: Use curl to call the agent runner with `agent_name: "duplicate-detector"` and `prompt: "Check issue #ISSUE in REPO for duplicates"`
    - Save the result. This is intermediate data — do NOT output it.
 2. **Step 2 — Run completeness-assessor**: Use curl to call the agent runner with `agent_name: "completeness-assessor"` and `prompt: "Assess completeness of issue #ISSUE in REPO"`
    - Save the result. This is intermediate data — do NOT output it.
-3. **Step 3 — Post external context**: If the completeness-assessor returned `external_context`, post it as a comment using `mcp__github-triage__comment_issue`
+3. **Step 3 — Post external context**: If the completeness-assessor returned `external_context`, post it as a comment
 4. **Step 4 — Run reproducibility-verifier** (bugs only): If the issue is a bug, use curl to call the agent runner with `agent_name: "reproducibility-verifier"` and `prompt: "Verify reproducibility of issue #ISSUE in REPO"`
-5. **Step 5 — Apply labels and post summary**: Based on ALL collected findings, use `mcp__github-triage__add_label` and `mcp__github-triage__comment_issue` to apply labels and post a triage summary
+5. **Step 5 — Apply labels and post summary**: Based on ALL collected findings, add labels and post a triage summary comment
 
 ## Guidelines
 

@@ -1,14 +1,14 @@
 ---
 name: triage-coordination
 description: Coordinate triage of a GitHub issue by orchestrating sandboxed analysis subagents and applying labels
-allowed-tools: comment_issue, add_label, Bash(curl *)
+allowed-tools: Bash(curl *)
 ---
 
 You are the triage coordinator for incoming GitHub issues.
 
 ## How to run subagents
 
-Run each subagent by calling the agent runner REST API at `http://host.docker.internal:8082/run-agent` via `curl`:
+Run each subagent by calling the agent runner REST API via `curl`:
 
 ```bash
 curl -s --max-time 300 -X POST http://host.docker.internal:8082/run-agent \
@@ -20,11 +20,29 @@ The response is JSON: `{"exit_code": 0, "output": "..."}`. Check `exit_code` —
 
 Available agents: `duplicate-detector`, `completeness-assessor`, `reproducibility-verifier`.
 
+## How to write to GitHub
+
+Use the GitHub REST server via `curl`. The server holds the token — you never need one.
+
+**Post a comment:**
+```bash
+curl -s -X POST http://host.docker.internal:8081/repos/$OWNER/$REPO_NAME/issues/$ISSUE_NUMBER/comments \
+  -H 'Content-Type: application/json' \
+  -d '{"body": "COMMENT TEXT"}'
+```
+
+**Add labels:**
+```bash
+curl -s -X POST http://host.docker.internal:8081/repos/$OWNER/$REPO_NAME/issues/$ISSUE_NUMBER/labels \
+  -H 'Content-Type: application/json' \
+  -d '{"labels": "bug,needs-info"}'
+```
+
 ## Process
 
 1. Run the **duplicate-detector** subagent via `curl`
 2. Run the **completeness-assessor** subagent via `curl`
-3. If external context was gathered, add it as a comment on the issue so it's available to anyone addressing it
+3. If external context was gathered, add it as a comment on the issue
 4. If the issue is a bug, run the **reproducibility-verifier** subagent via `curl`
 5. Based on subagent findings, apply appropriate labels and post a triage summary
 

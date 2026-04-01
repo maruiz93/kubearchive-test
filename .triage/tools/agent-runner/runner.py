@@ -1,10 +1,10 @@
 """Agent runner: runs any agent in a sandboxed environment on the host.
 
 Handles the full sandbox lifecycle: create, apply policy, bootstrap
-(copy claude binary, agent/skill definitions, MCP config, credentials),
+(copy claude binary, agent/skill definitions, credentials),
 run the agent via SSH, extract transcripts, and clean up.
 
-Used exclusively by the agent runner MCP server, which is the single
+Used exclusively by the agent runner REST server, which is the single
 entry point for all agent execution (both triage and subagents).
 """
 
@@ -84,9 +84,8 @@ def _bootstrap_sandbox(
     ssh_config_path: str,
     sandbox_name: str,
     working_dir: Path,
-    mcp_config_path: str,
 ) -> None:
-    """Copy claude binary, agent files, skills, and MCP config into a sandbox."""
+    """Copy claude binary, agent files, and skills into a sandbox."""
 
     def scp(local, remote):
         sandbox_scp(ssh_config_path, sandbox_name, local, remote)
@@ -98,10 +97,6 @@ def _bootstrap_sandbox(
     if not claude_bin:
         raise RuntimeError("claude binary not found in PATH")
 
-    gh_bin = shutil.which("gh")
-    if not gh_bin:
-        raise RuntimeError("gh CLI not found in PATH")
-
     # Create workspace structure
     ssh(
         f"mkdir -p {SANDBOX_WORKSPACE}/.claude/agents "
@@ -109,10 +104,9 @@ def _bootstrap_sandbox(
         f"{SANDBOX_WORKSPACE}/bin"
     )
 
-    # Copy claude and gh binaries
+    # Copy claude binary
     scp(claude_bin, f"{SANDBOX_WORKSPACE}/bin/claude")
-    scp(gh_bin, f"{SANDBOX_WORKSPACE}/bin/gh")
-    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/claude {SANDBOX_WORKSPACE}/bin/gh")
+    ssh(f"chmod +x {SANDBOX_WORKSPACE}/bin/claude")
 
     # Copy agent definitions
     for agent_file in (working_dir / "agents").glob("*.md"):
@@ -123,9 +117,6 @@ def _bootstrap_sandbox(
         if skill_dir.is_dir():
             scp(str(skill_dir), f"{SANDBOX_WORKSPACE}/.claude/skills/")
 
-    # Copy MCP config
-    scp(mcp_config_path, f"{SANDBOX_WORKSPACE}/mcp_config.json")
-
 
 class AgentRunner:
     """Runs agents in sandboxed environments on the host."""
@@ -133,13 +124,11 @@ class AgentRunner:
     def __init__(
         self,
         working_dir: Path,
-        mcp_config_path: str,
         owner: str,
         repo_name: str,
         issue_number: int,
     ):
         self.working_dir = working_dir
-        self.mcp_config_path = mcp_config_path
         self.owner = owner
         self.repo_name = repo_name
         self.issue_number = issue_number
@@ -211,7 +200,6 @@ class AgentRunner:
                 ssh_config_path,
                 sandbox_name,
                 self.working_dir,
-                self.mcp_config_path,
             )
 
             # 5b. Copy Vertex AI credentials
@@ -227,12 +215,12 @@ class AgentRunner:
                 sandbox_name,
                 "curl -s --max-time 5 -o /dev/null "
                 "-w '%{http_code}' "
-                "http://host.docker.internal:8081/ "
+                "http://host.docker.internal:8081/health "
                 "2>&1 || echo 'FAIL'",
                 timeout=15,
             )
             print(
-                f"[runner] MCP connectivity: {check.stdout.strip()}",
+                f"[runner] GH server connectivity: {check.stdout.strip()}",
                 file=sys.stderr,
             )
 
@@ -241,7 +229,6 @@ class AgentRunner:
                 f"[runner] Running '{agent_name}'...",
                 file=sys.stderr,
             )
-            mcp_config = f"{SANDBOX_WORKSPACE}/mcp_config.json"
             ssh_cmd = [  # nosec B607
                 "ssh",
                 "-F",
@@ -250,13 +237,11 @@ class AgentRunner:
                 f"cd {SANDBOX_WORKSPACE} && "
                 f"export PATH={SANDBOX_WORKSPACE}/bin:$PATH && "
                 f"export CLAUDE_CONFIG_DIR={SANDBOX_CLAUDE_CONFIG} && "
-                f"export REPO='{self.owner}/{self.repo_name}' && "
+                f"export OWNER='{self.owner}' && "
+                f"export REPO_NAME='{self.repo_name}' && "
                 f"export ISSUE_NUMBER='{self.issue_number}' && "
-                f"export MCP_TIMEOUT=300000 && "
                 f"{vertex_exports}"
                 f"claude --print --agent '{agent_name}' "
-                f"--mcp-config '{mcp_config}' "
-                f"--strict-mcp-config "
                 f"--dangerously-skip-permissions "
                 f"'{prompt}'",
             ]

@@ -1,7 +1,7 @@
 version: 1
 
 # Policy for the duplicate-detector.
-# Read-only access to GitHub API (search for duplicates).
+# Read-only access to the GitHub REST server on the host (search for duplicates).
 # No write access, no external web, no local filesystem beyond sandbox.
 #
 # Placeholders {{OWNER}} and {{REPO_NAME}} are substituted at runtime
@@ -18,13 +18,14 @@ process:
   run_as_group: sandbox
 
 network_policies:
-  github_api:
-    name: github-api-readonly
+  gh_server:
+    name: gh-server-readonly
     endpoints:
-      - host: api.github.com
-        port: 443
+      # GitHub REST server on the host. GET-only via L7 enforcement.
+      # allowed_ips bypasses default SSRF guard for private IPs.
+      - host: host.docker.internal
+        port: 8081
         protocol: rest
-        tls: terminate
         enforcement: enforce
         rules:
           - allow:
@@ -36,6 +37,10 @@ network_policies:
           - allow:
               method: GET
               path: /search/issues
+        allowed_ips:
+          - "10.0.0.0/8"
+          - "172.16.0.0/12"
+          - "192.168.0.0/16"
     binaries:
       - path: "**"
   vertex_ai:

@@ -1,44 +1,25 @@
-"""Orchestrator: starts servers and launches the triage agent via the agent runner."""
+"""Orchestrator: starts REST servers and launches the triage agent via the agent runner."""
 
 import json
 import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 import urllib.request
 from pathlib import Path
 
-from . import AGENT_RUNNER_PORT, GH_MCP_PORT
+from . import AGENT_RUNNER_PORT, GH_SERVER_PORT
 
 
-def _wait_for_server(port: int, label: str, *, mcp: bool = False, timeout: int = 10) -> None:
-    """Wait for a server to respond on the given port.
-
-    For MCP servers, sends a JSON-RPC initialize request.
-    For REST servers, sends a GET to /health.
-    """
+def _wait_for_server(port: int, label: str, timeout: int = 10) -> None:
+    """Wait for a REST server to respond on the given port."""
     for _ in range(timeout * 2):
         try:
-            if mcp:
-                req = urllib.request.Request(
-                    f"http://localhost:{port}/",
-                    data=json.dumps(
-                        {
-                            "jsonrpc": "2.0",
-                            "id": 0,
-                            "method": "initialize",
-                        }
-                    ).encode(),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-            else:
-                req = urllib.request.Request(
-                    f"http://localhost:{port}/health",
-                    method="GET",
-                )
+            req = urllib.request.Request(
+                f"http://localhost:{port}/health",
+                method="GET",
+            )
             urllib.request.urlopen(req, timeout=1)  # nosec B310
             return
         except Exception:
@@ -46,33 +27,31 @@ def _wait_for_server(port: int, label: str, *, mcp: bool = False, timeout: int =
     raise RuntimeError(f"{label} failed to start on port {port}")
 
 
-def _start_gh_mcp_server(token: str, repo: str, working_dir: Path) -> subprocess.Popen:
-    """Start the GitHub MCP server as a background HTTP process."""
-    server_path = working_dir / "tools" / "gh-mcp" / "gh_mcp_server.py"
+def _start_gh_server(token: str, repo: str, working_dir: Path) -> subprocess.Popen:
+    """Start the GitHub REST server as a background HTTP process."""
+    server_path = working_dir / "tools" / "gh-mcp" / "gh_server.py"
     env = {
         **os.environ,
-        "MCP_GH_TOKEN": token,
-        "MCP_ALLOWED_REPO": repo,
+        "GH_TOKEN": token,
+        "GH_ALLOWED_REPO": repo,
     }
     process = subprocess.Popen(
         [  # nosec B607
             "python3",
             str(server_path),
-            "--http",
             "--port",
-            str(GH_MCP_PORT),
+            str(GH_SERVER_PORT),
         ],
         env=env,
         stdout=subprocess.DEVNULL,
         stderr=sys.stderr,
     )
-    _wait_for_server(GH_MCP_PORT, "GitHub MCP server", mcp=True)
+    _wait_for_server(GH_SERVER_PORT, "GitHub REST server")
     return process
 
 
 def _start_agent_runner_server(
     working_dir: Path,
-    mcp_config_path: str,
     owner: str,
     repo_name: str,
     issue_number: int,
@@ -82,7 +61,6 @@ def _start_agent_runner_server(
     env = {
         **os.environ,
         "AGENT_RUNNER_WORKING_DIR": str(working_dir),
-        "AGENT_RUNNER_MCP_CONFIG": mcp_config_path,
         "AGENT_RUNNER_OWNER": owner,
         "AGENT_RUNNER_REPO_NAME": repo_name,
         "AGENT_RUNNER_ISSUE_NUMBER": str(issue_number),
@@ -129,46 +107,24 @@ def launch_agent(
         )
         sys.exit(1)
 
-    gh_mcp_process = None
+    gh_server_process = None
     runner_process = None
-    mcp_config_file_path = None
 
     def cleanup():
         if runner_process:
             runner_process.terminate()
             runner_process.wait(timeout=5)
-        if gh_mcp_process:
-            gh_mcp_process.terminate()
-            gh_mcp_process.wait(timeout=5)
-        if mcp_config_file_path and os.path.exists(mcp_config_file_path):
-            os.unlink(mcp_config_file_path)
+        if gh_server_process:
+            gh_server_process.terminate()
+            gh_server_process.wait(timeout=5)
 
     try:
-        # 1. Start GitHub MCP server
-        gh_mcp_process = _start_gh_mcp_server(token, repo, working_dir)
+        # 1. Start GitHub REST server
+        gh_server_process = _start_gh_server(token, repo, working_dir)
 
-        # 2. Write MCP config (GitHub MCP server only — agent runner is REST)
-        mcp_config = {
-            "mcpServers": {
-                "github-triage": {
-                    "type": "http",
-                    "url": f"http://host.docker.internal:{GH_MCP_PORT}/",
-                },
-            }
-        }
-        with tempfile.NamedTemporaryFile(
-            mode="w",
-            prefix="mcp_config_",
-            suffix=".json",
-            delete=False,
-        ) as mcp_config_tmp:
-            json.dump(mcp_config, mcp_config_tmp)
-            mcp_config_file_path = mcp_config_tmp.name
-
-        # 3. Start agent runner REST server
+        # 2. Start agent runner REST server
         runner_process = _start_agent_runner_server(
             working_dir,
-            mcp_config_file_path,
             owner,
             repo_name,
             issue_number,
@@ -176,7 +132,10 @@ def launch_agent(
 
         # --- Log setup ---
         print(f"Triage: {repo}#{issue_number}")
-        print(f"  GH MCP:    http://host.docker.internal:{GH_MCP_PORT}/ (pid {gh_mcp_process.pid})")
+        print(
+            f"  GH server: http://host.docker.internal:{GH_SERVER_PORT}/"
+            f" (pid {gh_server_process.pid})"
+        )
         print(
             f"  Runner:    http://host.docker.internal"
             f":{AGENT_RUNNER_PORT}/"
@@ -185,7 +144,7 @@ def launch_agent(
         print("---")
         sys.stdout.flush()
 
-        # 4. Run triage agent via the agent runner REST server
+        # 3. Run triage agent via the agent runner REST server
         #    (same sandbox lifecycle as subagents — the server
         #    is the single entry point for all agent execution)
         request_body = {
