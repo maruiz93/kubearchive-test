@@ -162,30 +162,57 @@ def extract_transcripts(
 
 
 def _resolve_host_ip() -> str:
-    """Resolve host.docker.internal to a specific IP address."""
+    """Resolve the IP that sandboxes use to reach the host.
+
+    OpenShell sandboxes run in Docker containers where
+    ``host.docker.internal`` resolves to the docker bridge gateway
+    (typically 172.17.0.1).  The ``allowed_ips`` field in network
+    policies must match that IP so the OpenShell proxy permits traffic.
+
+    Resolution order:
+    1. ``host.docker.internal`` DNS (works on Docker Desktop).
+    2. ``docker0`` interface address (works on plain Docker Engine).
+    3. Default route gateway (last resort).
+    """
     import socket
 
     try:
         return socket.gethostbyname("host.docker.internal")
-    except socket.gaierror as dns_err:
-        # Fallback: on Linux without Docker Desktop, the host IP
-        # is typically the docker bridge gateway.
-        try:
-            result = subprocess.run(
-                ["ip", "route", "show", "default"],  # nosec B607
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            # "default via 172.17.0.1 dev eth0" → 172.17.0.1
-            parts = result.stdout.strip().split()
-            if len(parts) >= 3 and parts[0] == "default":
-                return parts[2]
-        except Exception:
-            pass
-        raise RuntimeError(
-            "Cannot resolve host.docker.internal and no default gateway found"
-        ) from dns_err
+    except socket.gaierror:
+        pass
+
+    # Fallback 1: docker bridge gateway (the IP sandboxes see as the host).
+    try:
+        result = subprocess.run(
+            ["ip", "-4", "addr", "show", "docker0"],  # nosec B607
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        # Output like: "inet 172.17.0.1/16 brd 172.17.255.255 ..."
+        for token in result.stdout.split():
+            if "/" in token and token.split("/")[0].count(".") == 3:
+                return token.split("/")[0]
+    except Exception:
+        pass
+
+    # Fallback 2: default route gateway (may differ from docker bridge).
+    try:
+        result = subprocess.run(
+            ["ip", "route", "show", "default"],  # nosec B607
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        parts = result.stdout.strip().split()
+        if len(parts) >= 3 and parts[0] == "default":
+            return parts[2]
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "Cannot resolve host IP: no docker bridge or default gateway found"
+    )
 
 
 def render_policy(
@@ -199,6 +226,7 @@ def render_policy(
         content = f.read()
 
     host_ip = _resolve_host_ip()
+    print(f"[policy] Resolved host IP for allowed_ips: {host_ip}", file=sys.stderr)
 
     content = (
         content.replace("{{OWNER}}", owner)
