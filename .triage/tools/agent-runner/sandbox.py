@@ -74,7 +74,11 @@ def apply_policy(sandbox_name: str, policy_path: str) -> None:
         )
         if result.returncode == 0:
             return
-        print(f"  Policy attempt {attempt} failed, retrying in 3s...", file=sys.stderr)
+        print(
+            f"  Policy attempt {attempt} failed, retrying in 3s... "
+            f"stdout={result.stdout!r} stderr={result.stderr!r}",
+            file=sys.stderr,
+        )
         time.sleep(3)
     raise RuntimeError("Policy set failed after 3 attempts")
 
