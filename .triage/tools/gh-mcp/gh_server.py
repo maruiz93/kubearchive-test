@@ -106,7 +106,7 @@ def make_http_handler(token: str, allowed_repo: str) -> type:
                 self._send_json(200, json.loads(result.stdout))
                 return
 
-            self._send_json(404, {"error": f"Not found: {self.path}"})
+            self._send_json(404, {"error": f"Not found: GET {self.path}"})
 
         def do_POST(self):
             content_length = int(self.headers.get("Content-Length", 0))
@@ -213,7 +213,19 @@ def make_http_handler(token: str, allowed_repo: str) -> type:
                 self._send_json(200, json.loads(view_result.stdout))
                 return
 
-            self._send_json(404, {"error": f"Not found: {self.path}"})
+            self._send_json(404, {"error": f"Not found: POST {self.path}"})
+
+        def do_PUT(self):
+            self._reject_method("PUT")
+
+        def do_PATCH(self):
+            self._reject_method("PATCH")
+
+        def do_DELETE(self):
+            self._reject_method("DELETE")
+
+        def _reject_method(self, method: str):
+            self._send_json(405, {"error": f"Method not allowed: {method} {self.path}"})
 
         def _send_json(self, status: int, data) -> None:
             body = json.dumps(data).encode()
@@ -224,7 +236,9 @@ def make_http_handler(token: str, allowed_repo: str) -> type:
             self.wfile.write(body)
 
         def log_message(self, format, *args):
-            print(f"[gh-server] {args[0]}", file=sys.stderr)
+            # args: (request_line, status_code, size)
+            msg = format % args if args else format
+            print(f"[gh-server] {msg}", file=sys.stderr)
 
     return GitHubAPIHandler
 

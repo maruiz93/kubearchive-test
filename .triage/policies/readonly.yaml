@@ -30,6 +30,9 @@ network_policies:
         rules:
           - allow:
               method: GET
+              path: /health
+          - allow:
+              method: GET
               path: /repos/{{OWNER}}/{{REPO_NAME}}/issues
           - allow:
               method: GET

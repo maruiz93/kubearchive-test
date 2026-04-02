@@ -29,6 +29,9 @@ network_policies:
         rules:
           - allow:
               method: GET
+              path: /health
+          - allow:
+              method: GET
               path: /repos/{{OWNER}}/{{REPO_NAME}}/issues/{{ISSUE_NUMBER}}
         allowed_ips:
           - "{{HOST_IP}}/32"
