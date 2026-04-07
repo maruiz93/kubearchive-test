@@ -248,7 +248,7 @@ class AgentRunner:
 
             if stream:
                 # Stream to stderr so output reaches the terminal even
-                # when running inside the MCP server (whose stdout is
+                # when running inside the REST server (whose stdout is
                 # DEVNULL but stderr is connected to the parent).
                 process = subprocess.Popen(
                     ssh_cmd,
