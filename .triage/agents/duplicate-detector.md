@@ -4,7 +4,7 @@ description: Searches for duplicate issues in the repository. Use when triaging 
 skills:
   - detect-duplicates
 tools: Bash(curl *)
-model: haiku
+model: claude-haiku-3-5-20241022
 sandbox: policies/readonly.yaml
 ---
 
