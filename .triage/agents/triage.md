@@ -6,7 +6,7 @@ description: >
 skills:
   - triage-coordination
 tools: Bash(curl *)
-model: claude-sonnet-4@20250514
+model: sonnet
 sandbox: policies/triage-write.yaml
 ---
 
