@@ -4,7 +4,7 @@ description: Evaluates whether an issue has sufficient information for action. U
 skills:
   - assess-completeness
 tools: Bash(curl *), WebFetch
-model: claude-haiku-3-5-20241022
+model: haiku
 sandbox: policies/readonly-with-web.yaml
 ---
 

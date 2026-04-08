@@ -4,7 +4,7 @@ description: Verifies whether a reported bug is reproducible by inspecting the c
 skills:
   - verify-reproducibility
 tools: Bash(curl *), Bash(grep *), Bash(find *), Bash(cat *)
-model: claude-haiku-3-5-20241022
+model: haiku
 sandbox: policies/readonly-with-local.yaml
 ---
 
