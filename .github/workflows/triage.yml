@@ -26,7 +26,7 @@ jobs:
 
       - name: Install Claude CLI
         run: |
-          curl -fsSL https://claude.ai/install.sh | bash -s -- stable
+          curl -fsSL https://claude.ai/install.sh | bash -s -- 2.1.96
           echo "$HOME/.claude/bin" >> "$GITHUB_PATH"
 
       - name: Install OpenShell
