@@ -14,5 +14,6 @@ validation_loop:
 
 env:
   REPO_NAME: "${REPO_NAME}"
+  ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
 
 timeout_minutes: 5
