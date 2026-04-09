@@ -1,5 +1,6 @@
 # harness/hello-world.yaml
 agent: agents/hello-world.md
+policy: policies/hello-world.yaml
 
 skills:
   - skills/hello-world-summary
