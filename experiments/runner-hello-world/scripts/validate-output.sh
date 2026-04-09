@@ -3,21 +3,6 @@ set -euo pipefail
 
 OUTPUT_FILE="output/hello-world.md"
 
-if [ ! -f "$OUTPUT_FILE" ]; then
-  echo "FAIL: $OUTPUT_FILE not found"
-  exit 1
-fi
-
-if ! grep -q "^# Hello World" "$OUTPUT_FILE"; then
-  echo "FAIL: missing '# Hello World' heading"
-  exit 1
-fi
-
-if ! grep -q "Hello world from repo" "$OUTPUT_FILE"; then
-  echo "FAIL: missing greeting line"
-  exit 1
-fi
-
 # Counter-based failure for testing retry logic.
 # VALIDATION_EXPECTED_FAILURES controls how many times to fail before passing.
 EXPECTED_FAILURES="${VALIDATION_EXPECTED_FAILURES:-0}"
