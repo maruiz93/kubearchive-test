@@ -11,13 +11,10 @@ tools_binaries:
 
 validation_loop:
   script: scripts/validate-output.sh
-  max_iterations: 1
+  max_iterations: 3
 
-env:
-  REPO_NAME: "${REPO_NAME}"
-  CLAUDE_CODE_USE_VERTEX: "1"
-  ANTHROPIC_VERTEX_PROJECT_ID: "${ANTHROPIC_VERTEX_PROJECT_ID}"
-  CLOUD_ML_REGION: "${CLOUD_ML_REGION}"
-  GOOGLE_APPLICATION_CREDENTIALS: "${GOOGLE_APPLICATION_CREDENTIALS}"
+env_files:
+  - env/gcp.env
+  - env/repo.env
 
 timeout_minutes: 5
