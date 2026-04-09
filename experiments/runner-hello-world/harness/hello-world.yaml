@@ -1,0 +1,18 @@
+# harness/hello-world.yaml
+agent: agents/hello-world.md
+
+skills:
+  - skills/hello-world-summary
+
+tools_binaries:
+  - name: hello-world-bin
+    path: tools/hello-world-bin
+
+validation_loop:
+  script: scripts/validate-output.sh
+  max_iterations: 1
+
+env:
+  REPO_NAME: "${REPO_NAME}"
+
+timeout_minutes: 5

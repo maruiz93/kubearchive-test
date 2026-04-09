@@ -1,0 +1,43 @@
+name: Hello World Agent
+
+on:
+  workflow_dispatch:
+
+jobs:
+  hello-world:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Build fullsend
+        run: |
+          git clone https://github.com/fullsend-ai/fullsend.git /tmp/fullsend
+          cd /tmp/fullsend && git checkout runner-hello-world
+          cd /tmp/fullsend && make go-build
+          sudo cp bin/fullsend /usr/local/bin/
+          fullsend --version
+
+      - name: Install OpenShell
+        run: |
+          curl -LsSf https://raw.githubusercontent.com/NVIDIA/OpenShell/main/install.sh | sh
+          openshell --version
+
+      - name: Install Claude Code
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+
+      - name: Run hello-world agent
+        env:
+          REPO_NAME: ${{ github.repository }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          fullsend entrypoint hello-world --harness-dir experiments/runner-hello-world

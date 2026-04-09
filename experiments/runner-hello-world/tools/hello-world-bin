@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p output
+
+cat > output/hello-world.md <<EOF
+# Hello World
+
+Hello world from repo ${REPO_NAME:-unknown}.
+
+Generated at $(date -u +"%Y-%m-%dT%H:%M:%SZ").
+EOF
+
+echo "Wrote output/hello-world.md"
