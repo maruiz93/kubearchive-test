@@ -13,6 +13,9 @@ validation_loop:
   script: scripts/validate-output.sh
   max_iterations: 3
 
+env:
+  VALIDATION_EXPECTED_FAILURES: "1"
+
 env_files:
   - env/gcp.env
   - env/repo.env

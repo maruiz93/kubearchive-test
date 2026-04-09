@@ -39,7 +39,6 @@ jobs:
           REPO_NAME: ${{ github.repository }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
           CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
-          VALIDATION_EXPECTED_FAILURES: "2"
         run: |
           fullsend entrypoint hello-world --harness-dir experiments/runner-hello-world
 
