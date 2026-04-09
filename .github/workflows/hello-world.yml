@@ -29,10 +29,16 @@ jobs:
           npm install -g @anthropic-ai/claude-code
           claude --version
 
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
       - name: Run hello-world agent
         env:
           REPO_NAME: ${{ github.repository }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.ANTHROPIC_VERTEX_PROJECT_ID }}
+          CLOUD_ML_REGION: ${{ secrets.CLOUD_ML_REGION }}
         run: |
           fullsend entrypoint hello-world --harness-dir experiments/runner-hello-world
 
