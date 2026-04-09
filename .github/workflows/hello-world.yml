@@ -35,3 +35,10 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           fullsend entrypoint hello-world --harness-dir experiments/runner-hello-world
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hello-world-output
+          path: experiments/runner-hello-world/output/
