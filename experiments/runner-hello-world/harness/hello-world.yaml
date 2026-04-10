@@ -2,6 +2,14 @@
 agent: agents/hello-world.md
 policy: policies/hello-world.yaml
 
+providers:
+  - gcp-vertex
+  - repo-env
+
+host_files:
+  - src: ${GOOGLE_APPLICATION_CREDENTIALS}
+    dest: /tmp/workspace/.gcp-credentials.json
+
 skills:
   - skills/hello-world-summary
 
@@ -13,11 +21,7 @@ validation_loop:
   script: scripts/validate-output.sh
   max_iterations: 3
 
-env:
+runner_env:
   VALIDATION_EXPECTED_FAILURES: "1"
-
-env_files:
-  - env/gcp.env
-  - env/repo.env
 
 timeout_minutes: 5
