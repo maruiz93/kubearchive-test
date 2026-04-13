@@ -2,11 +2,13 @@
 agent: agents/hello-world.md
 policy: policies/hello-world.yaml
 
-providers:
-  - gcp-vertex
-  - repo-env
-
 host_files:
+  - src: env/gcp-vertex.env
+    dest: /tmp/workspace/.env.d/gcp-vertex.env
+    expand: true
+  - src: env/repo.env
+    dest: /tmp/workspace/.env.d/repo.env
+    expand: true
   - src: ${GOOGLE_APPLICATION_CREDENTIALS}
     dest: /tmp/workspace/.gcp-credentials.json
 

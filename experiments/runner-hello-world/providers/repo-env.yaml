@@ -1,4 +1,0 @@
-name: repo-env
-type: generic
-credentials:
-  REPO_NAME: ${REPO_NAME}
