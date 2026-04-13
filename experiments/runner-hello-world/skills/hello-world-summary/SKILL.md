@@ -12,4 +12,4 @@ The summary should include:
 - The main languages and frameworks used
 - A list of the top-level directories and their purpose
 
-Write the summary to `output/hello-world.md`.
+Write the summary to `output/summary.md`.
