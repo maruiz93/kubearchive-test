@@ -1,6 +1,6 @@
 # harness/hello-world.yaml
 agent: agents/hello-world.md
-image: quay.io/manonru/fullsend-exp:9d2bc70
+image: quay.io/manonru/fullsend-exp:latest
 policy: policies/hello-world.yaml
 
 host_files:
