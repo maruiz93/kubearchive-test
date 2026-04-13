@@ -2,6 +2,11 @@ name: Hello World Agent
 
 on:
   workflow_dispatch:
+    inputs:
+      target-repo:
+        description: "Target repository (owner/repo)"
+        required: false
+        default: ""
 
 jobs:
   hello-world:
@@ -12,6 +17,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Checkout target repo
+        if: ${{ inputs.target-repo != '' }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.target-repo }}
+          path: target-repo
 
       - name: Install fullsend
         run: |
@@ -31,11 +43,12 @@ jobs:
 
       - name: Run hello-world agent
         env:
-          REPO_NAME: ${{ github.repository }}
+          REPO_NAME: ${{ inputs.target-repo || github.repository }}
+          TARGET_REPO_DIR: ${{ inputs.target-repo != '' && 'target-repo' || '' }}
           ANTHROPIC_VERTEX_PROJECT_ID: ${{ secrets.GCP_PROJECT }}
           CLOUD_ML_REGION: ${{ secrets.GCP_REGION }}
         run: |
-          fullsend entrypoint hello-world --harness-dir experiments/runner-hello-world
+          fullsend run hello-world --harness-dir experiments/runner-hello-world
 
       - name: Upload artifacts
         if: always()
