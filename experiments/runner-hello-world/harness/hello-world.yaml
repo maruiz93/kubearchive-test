@@ -1,5 +1,6 @@
 # harness/hello-world.yaml
 agent: agents/hello-world.md
+image: quay.io/manonru/fullsend-exp:9d2bc70
 policy: policies/hello-world.yaml
 
 host_files:
@@ -14,10 +15,6 @@ host_files:
 
 skills:
   - skills/hello-world-summary
-
-tools_binaries:
-  - name: hello-world-bin
-    path: tools/hello-world-bin
 
 validation_loop:
   script: scripts/validate-output.sh
